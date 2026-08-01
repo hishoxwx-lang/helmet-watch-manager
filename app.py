@@ -399,7 +399,7 @@ def setup():
 def main():
     config = load_config()
     port = int(config.get("port", 8080))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
 
 
 if __name__ == "__main__":
