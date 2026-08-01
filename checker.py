@@ -279,15 +279,24 @@ def _rakuten_render(url, wait_ms=4000):
     """Playwright で楽天ページをレンダリングし HTML を返す。失敗時は例外を投げる。"""
     sync_playwright = _playwright_import()
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--blink-settings=imagesEnabled=false"],
+        )
         ctx = browser.new_context(user_agent=USER_AGENT, locale="ja-JP")
         page = ctx.new_page()
+        # 画像・CSS・フォントをブロックして高速化
+        def _block(route):
+            if route.request.resource_type in ("image", "stylesheet", "font", "media"):
+                route.abort()
+            else:
+                route.continue_()
+        page.route("**/*", _block)
         page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        # itemInfoSku がロードされるまで待つ（最大15秒）。サーバー環境では固定待ちだと間に合わない
         try:
             page.wait_for_function(
                 "document.documentElement.outerHTML.includes('itemInfoSku')",
-                timeout=15000,
+                timeout=10000,
             )
         except Exception:
             page.wait_for_timeout(wait_ms)
