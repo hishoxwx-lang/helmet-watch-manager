@@ -15,6 +15,13 @@ import sys
 import datetime
 from pathlib import Path
 
+# 標準出力をUTF-8に（Windowsで親プロセスがUTF-8で受信するため）
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 try:
     import requests
 except ImportError:
