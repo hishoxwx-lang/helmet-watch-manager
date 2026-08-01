@@ -283,7 +283,14 @@ def _rakuten_render(url, wait_ms=4000):
         ctx = browser.new_context(user_agent=USER_AGENT, locale="ja-JP")
         page = ctx.new_page()
         page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        page.wait_for_timeout(wait_ms)
+        # itemInfoSku がロードされるまで待つ（最大15秒）。サーバー環境では固定待ちだと間に合わない
+        try:
+            page.wait_for_function(
+                "document.documentElement.outerHTML.includes('itemInfoSku')",
+                timeout=15000,
+            )
+        except Exception:
+            page.wait_for_timeout(wait_ms)
         html = page.content()
         browser.close()
     return html
