@@ -24,6 +24,10 @@
           ▶ 今すぐチェック
         </a>
         <a href="{{ url_for('settings') }}" class="btn btn-outline-secondary btn-sm">⚙ 設定</a>
+        <form method="post" action="{{ url_for('update') }}" class="d-inline"
+              onsubmit="var b=this.querySelector('button'); b.disabled=true; b.textContent='更新中...';">
+          <button type="submit" class="btn btn-outline-primary btn-sm">🔄 最新版に更新</button>
+        </form>
         <a href="{{ url_for('logout') }}" class="btn btn-outline-danger btn-sm">ログアウト</a>
       </div>
     </div>

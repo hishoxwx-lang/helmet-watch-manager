@@ -265,6 +265,44 @@ def yahoo_variants_api():
     return jsonify(result)
 
 
+@app.route("/update", methods=["POST"])
+@login_required
+def update():
+    """GitHub から最新版をDLして自動再起動（ユーザーデータは保持）"""
+    import urllib.request as _urlreq
+    import threading as _th
+    import os as _os
+    base = "https://raw.githubusercontent.com/hishoxwx-lang/helmet-watch-manager/main/"
+    targets = [
+        "app.py", "checker.py",
+        "templates/index.html", "templates/login.html",
+        "templates/settings.html", "templates/setup.html",
+    ]
+    errors = []
+    for rel in targets:
+        try:
+            dest = BASE_DIR / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            tmp = str(dest) + ".tmp"
+            _urlreq.urlretrieve(base + rel, tmp)
+            _os.replace(tmp, dest)
+        except Exception as e:
+            errors.append("{}: {}".format(rel, e))
+    if errors:
+        flash("更新エラー: " + "; ".join(errors), "danger")
+        return redirect(url_for("index"))
+    flash("最新版に更新しました。再起動します（数秒お待ちください）...", "success")
+
+    def _respawn():
+        import time
+        time.sleep(1.5)
+        subprocess.Popen([sys.executable, str(BASE_DIR / "app.py")], cwd=str(BASE_DIR))
+        _os._exit(0)
+
+    _th.Thread(target=_respawn, daemon=True).start()
+    return redirect(url_for("index"))
+
+
 @app.route("/run")
 @login_required
 def run():
