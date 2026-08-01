@@ -22,7 +22,7 @@ from flask import (
 
 from werkzeug.security import generate_password_hash, check_password_hash
 
-from checker import fetch_yahoo_variants
+from checker import fetch_yahoo_variants, fetch_og_image
 
 BASE_DIR = Path(__file__).resolve().parent
 PRODUCTS_FILE = BASE_DIR / "products.json"
@@ -139,6 +139,7 @@ def index():
             "stock_keyword": p.get("stock_keyword", "在庫"),
             "enabled": p.get("enabled", True),
             "site_name": site_name_of(p.get("url", "")),
+            "image_url": p.get("image_url", ""),
             "state": s.get("state"),
             "state_label": STATE_LABEL.get(s.get("state"), "未確認"),
             "detail": s.get("detail", ""),
@@ -172,6 +173,11 @@ def add():
         return redirect(url_for("index"))
 
     products = load_products()
+    image_url = ""
+    try:
+        image_url = fetch_og_image(url)
+    except Exception:
+        image_url = ""
     products.append({
         "id": next_product_id(products),
         "name": name,
@@ -179,6 +185,7 @@ def add():
         "size_pattern": size_pattern,
         "stock_keyword": stock_keyword,
         "enabled": enabled,
+        "image_url": image_url,
     })
     save_json(PRODUCTS_FILE, products)
     flash("商品を追加しました: {}".format(name), "success")

@@ -132,7 +132,14 @@
                 <tr><td colspan="8" class="table-secondary fw-bold">🌐 {{ r.site_name }}</td></tr>
               {% endif %}
             <tr class="{{ '' if r.enabled else 'table-secondary text-muted' }}">
-              <td>{{ r.name }}</td>
+              <td>
+                <div class="d-flex align-items-center gap-2">
+                  {% if r.image_url %}
+                    <img src="{{ r.image_url }}" alt="" style="width:40px;height:40px;object-fit:cover;border-radius:4px;">
+                  {% endif %}
+                  <span>{{ r.name }}</span>
+                </div>
+              </td>
               <td><a href="{{ r.url }}" target="_blank" rel="noopener" class="url-link">商品ページ ↗</a></td>
               <td class="mono">{{ r.size_pattern }}</td>
               <td>

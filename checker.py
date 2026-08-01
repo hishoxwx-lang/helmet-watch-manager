@@ -104,6 +104,22 @@ def check_yahoo(html, size):
     return IN_STOCK, detail
 
 
+def fetch_og_image(url):
+    """商品ページの og:image を取得（無ければ空文字）"""
+    try:
+        html = fetch_html(url)
+    except Exception:
+        return ""
+    for pat in (
+        r'<meta\s+(?:property|name)=["\']og:image["\']\s+content=["\']([^"\']+)["\']',
+        r'<meta\s+content=["\']([^"\']+)["\']\s+(?:property|name)=["\']og:image["\']',
+    ):
+        m = re.search(pat, html, re.IGNORECASE)
+        if m:
+            return m.group(1)
+    return ""
+
+
 def fetch_yahoo_variants(url):
     """Yahoo!ショッピング商品のサイズ・カラー一覧を取得。
     戻り値: {"sizes": [...], "colors": [...]} または {"error": "..."}
