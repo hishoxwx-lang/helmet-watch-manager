@@ -149,6 +149,7 @@ def index():
     if webhook:
         # マスク表示 (先頭12文字 + ... )
         webhook_masked = webhook[:18] + "..." if len(webhook) > 18 else webhook
+    rows.sort(key=lambda x: (x.get("site_name", ""), x.get("id", 0)))
     return render_template(
         "index.html",
         rows=rows,
