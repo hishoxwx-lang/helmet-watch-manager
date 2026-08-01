@@ -55,11 +55,11 @@
           </div>
           <div class="col-md-6">
             <label class="form-label">URL</label>
-            <input type="url" name="url" id="productUrl" class="form-control" placeholder="https://www.webike.net/sd/xxxxx/ または Yahoo!商品URL" required>
+            <input type="url" name="url" id="productUrl" class="form-control" placeholder="Webike / Yahoo! / 楽天市場 の商品URL（楽天は ?variantId= 付き推奨）" required>
           </div>
           <div class="col-md-4">
             <label class="form-label">サイズパターン</label>
-            <input type="text" name="size_pattern" id="sizePattern" class="form-control" value="" placeholder="Webike例: サイズ：L ／ Yahoo!は右のボタンで取得">
+            <input type="text" name="size_pattern" id="sizePattern" class="form-control" value="" placeholder="Webike例: サイズ：L ／ Yahoo!・楽天は右のボタンで取得">
           </div>
           <div class="col-md-4">
             <label class="form-label">在庫キーワード</label>
@@ -77,8 +77,8 @@
         </form>
         <div class="mt-3 p-2 border rounded bg-light" id="yahooHelper">
           <div class="d-flex align-items-center gap-2 flex-wrap">
-            <span class="small text-muted">Yahoo!ショッピング:</span>
-            <button type="button" class="btn btn-sm btn-outline-primary" id="fetchVariantsBtn" onclick="fetchYahooVariants()">
+            <span class="small text-muted">Yahoo!ショッピング / 楽天市場:</span>
+            <button type="button" class="btn btn-sm btn-outline-primary" id="fetchVariantsBtn" onclick="fetchVariants()">
               📋 サイズ/カラー選択肢を取得
             </button>
             <span class="small text-muted" id="variantStatus"></span>
@@ -203,7 +203,7 @@
     }
   </script>
   <script>
-    async function fetchYahooVariants() {
+    async function fetchVariants() {
       const url = document.getElementById('productUrl').value.trim();
       const btn = document.getElementById('fetchVariantsBtn');
       const status = document.getElementById('variantStatus');
@@ -212,7 +212,7 @@
       btn.disabled = true; btn.textContent = '取得中...'; status.textContent = '';
       try {
         const fd = new FormData(); fd.append('url', url);
-        const resp = await fetch('{{ url_for("yahoo_variants_api") }}', { method: 'POST', body: fd });
+        const resp = await fetch('{{ url_for("variants_api") }}', { method: 'POST', body: fd });
         const data = await resp.json();
         if (data.error) { status.textContent = '❌ ' + data.error; return; }
         // サイズ

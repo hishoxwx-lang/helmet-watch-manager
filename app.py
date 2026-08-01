@@ -22,7 +22,7 @@ from flask import (
 
 from werkzeug.security import generate_password_hash, check_password_hash
 
-from checker import fetch_yahoo_variants, fetch_og_image
+from checker import fetch_yahoo_variants, fetch_rakuten_variants, fetch_og_image
 
 BASE_DIR = Path(__file__).resolve().parent
 PRODUCTS_FILE = BASE_DIR / "products.json"
@@ -119,6 +119,18 @@ def site_name_of(url):
     if "amazon.co.jp" in u:
         return "Amazon"
     return "その他"
+
+
+def fetch_variants(url):
+    """URL からサイト判定し、サイズ/カラー/商品名を取得。
+    戻り値: {"name","sizes","colors"} または {"error":"..."}
+    """
+    u = (url or "").lower()
+    if "rakuten.co.jp" in u:
+        return fetch_rakuten_variants(url)
+    if "yahoo.co.jp" in u:
+        return fetch_yahoo_variants(url)
+    return {"error": "選択肢取得は Yahoo!ショッピング / 楽天市場 のURLに対応しています"}
 
 
 # ---------- routes ----------
@@ -260,15 +272,14 @@ def settings():
 
 
 @app.route("/api/yahoo_variants", methods=["POST"])
+@app.route("/api/variants", methods=["POST"])
 @login_required
-def yahoo_variants_api():
-    """Yahoo!商品URLからサイズ/カラーの選択肢を取得"""
+def variants_api():
+    """商品URLからサイズ/カラーの選択肢を取得（Yahoo!/楽天 をURLで自動判定）"""
     url = (request.form.get("url") or "").strip()
     if not url:
         return jsonify({"error": "URLを入力してください"}), 400
-    if "yahoo.co.jp" not in url:
-        return jsonify({"error": "Yahoo!ショッピングのURLを入力してください"}), 400
-    result = fetch_yahoo_variants(url)
+    result = fetch_variants(url)
     return jsonify(result)
 
 
@@ -281,7 +292,7 @@ def update():
     import os as _os
     base = "https://raw.githubusercontent.com/hishoxwx-lang/helmet-watch-manager/main/"
     targets = [
-        "app.py", "checker.py",
+        "app.py", "checker.py", "requirements.txt",
         "templates/index.html", "templates/login.html",
         "templates/settings.html", "templates/setup.html",
     ]

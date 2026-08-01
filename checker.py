@@ -1,13 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-checker.py - Webike 等の商品在庫監視エンジン
+checker.py - Webike / Yahoo! / 楽天市場 の商品在庫監視エンジン
 
 products.json を読み、有効な全商品をチェック。
 各商品:
-  - URL を取得（charset を自動判定し Shift_JIS の場合はデコード）
-  - HTML から「サイズパターン」を含む <option> タグを正規表現で検索
-  - option テキストに「在庫キーワード」が含まれれば IN_STOCK、無ければ SOLD_OUT、option 無しも SOLD_OUT
+  - サイト判定で監視方法を切替:
+    * Webike 等 : URL を取得(charset 自動判定)し HTML の <option> タグを正規表現で検索
+    * Yahoo!    : __NEXT_DATA__ JSON の choiceName + stockText で判定
+    * 楽天市場   : Playwright(ヘッドレスChromium)でレンダリング後の埋め込みJSONを読み
+                  variantId ごとの在庫(stockCondition/quantity)で判定
   - state.json から前回状態を読み、変化時のみ Discord 通知
+
+Playwright は楽天商品があるときだけ遅延 import される。
+未インストールでも Webike/Yahoo! は動く(フェイルソフト)。
 """
 import json
 import re
@@ -162,6 +167,211 @@ def fetch_yahoo_variants(url):
         return {"error": "データの解析に失敗: {}".format(e)}
 
 
+# ==================== 楽天市場 (Playwright) ====================
+def _playwright_import():
+    """Playwright を遅延 import。未インストール時は ImportError。"""
+    from playwright.sync_api import sync_playwright
+    return sync_playwright
+
+
+def _balance_end(text, start):
+    """text[start] は '[' or '{'。対応する閉じ括弧のインデックスを返す(文字列内は無視)。"""
+    open_ch = text[start]
+    close_ch = "]" if open_ch == "[" else "}"
+    depth = 0
+    i = start
+    in_str = False
+    esc = False
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if esc:
+            esc = False
+        elif ch == "\\":
+            esc = True
+        elif ch == '"':
+            in_str = not in_str
+        elif not in_str:
+            if ch == open_ch:
+                depth += 1
+            elif ch == close_ch:
+                depth -= 1
+                if depth == 0:
+                    return i
+        i += 1
+    return -1
+
+
+def _rakuten_parse(html):
+    """楽天商品ページのレンダリング後HTMLから itemInfoSku 相当のデータを取り出す。
+    戻り値(dict) または None:
+      name           : 商品名
+      selectors      : variantSelectors (サイズ/カラー軸)
+      first_variant  : {"variantId":..., "selectorValues":[...]} (選択中バリアント)
+      vid_stocks     : {variantId: {"stockCondition","quantity","deliveryMessage"}}
+    """
+    vs = html.find('"variantSelectors"')
+    if vs < 0:
+        return None
+    script_start = html.rfind("<script", 0, vs)
+    if script_start < 0:
+        return None
+    content_start = html.find(">", script_start) + 1
+    content_end = html.find("</script>", vs)
+    script_txt = html[content_start:content_end]
+    fb = script_txt.find("{")
+    if fb < 0:
+        return None
+    end = _balance_end(script_txt, fb)
+    if end < 0:
+        return None
+    try:
+        obj = json.loads(script_txt[fb:end + 1])
+    except Exception:
+        return None
+    iis = obj.get("api", {}).get("data", {}).get("itemInfoSku", {})
+    if not iis:
+        return None
+
+    name = iis.get("title", "") or ""
+    selectors = iis.get("variantSelectors", []) or []
+
+    first = {}
+    sku_list = iis.get("sku", []) or []
+    if sku_list and isinstance(sku_list[0], dict):
+        e0 = sku_list[0]
+        first = {
+            "variantId": e0.get("variantId"),
+            "selectorValues": e0.get("selectorValues") or [],
+        }
+
+    vid_stocks = {}
+    pi = iis.get("purchaseInfo", {}) or {}
+    for e in pi.get("sku", []) or []:
+        vid = e.get("variantId")
+        nps = e.get("newPurchaseSku") or {}
+        if vid and nps:
+            vid_stocks[vid] = {
+                "stockCondition": nps.get("stockCondition"),
+                "quantity": nps.get("quantity"),
+                "deliveryMessage": nps.get("deliveryMessage", "") or "",
+            }
+    # fallback: newPurchaseSku が無ければ variantMappedInventories の quantity を使う
+    if not vid_stocks:
+        for e in pi.get("variantMappedInventories", []) or []:
+            vid = e.get("sku")
+            if vid:
+                vid_stocks[vid] = {
+                    "stockCondition": None,
+                    "quantity": e.get("quantity"),
+                    "deliveryMessage": "",
+                }
+
+    return {
+        "name": name,
+        "selectors": selectors,
+        "first_variant": first,
+        "vid_stocks": vid_stocks,
+    }
+
+
+def _rakuten_render(url, wait_ms=4000):
+    """Playwright で楽天ページをレンダリングし HTML を返す。失敗時は例外を投げる。"""
+    sync_playwright = _playwright_import()
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        ctx = browser.new_context(user_agent=USER_AGENT, locale="ja-JP")
+        page = ctx.new_page()
+        page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        page.wait_for_timeout(wait_ms)
+        html = page.content()
+        browser.close()
+    return html
+
+
+def fetch_rakuten_variants(url):
+    """楽天市場商品のサイズ・カラー一覧を取得。
+    戻り値: {"name":..., "sizes":[...], "colors":[...]} または {"error":"..."}
+    ※ variantSelectors から全サイズラベルを取得する。variantId とサイズの自動対応は
+       楽天側が埋め込まないため取得できない(選択中バリアントのみ)。
+    """
+    try:
+        html = _rakuten_render(url)
+    except ImportError:
+        return {"error": "Playwrightが未インストール (pip install playwright && playwright install chromium)"}
+    except Exception as e:
+        return {"error": "取得失敗: {}".format(e)}
+    data = _rakuten_parse(html)
+    if not data:
+        return {"error": "楽天商品ページのデータが見つかりません"}
+    sizes = []
+    colors = []
+    for axis in data.get("selectors") or []:
+        vals = [v.get("value") for v in axis.get("values", []) if v.get("value")]
+        if not sizes:
+            sizes = vals
+        elif not colors:
+            colors = vals
+    name = data.get("name", "")
+    if not sizes:
+        return {"error": "サイズ選択肢が見つかりません"}
+    return {"name": name, "sizes": sizes, "colors": colors}
+
+
+def check_rakuten(url, size):
+    """楽天市場: URLの variantId に対応するサイズの在庫を判定。
+    戻り値: (state, detail)  state: IN_STOCK / SOLD_OUT / UNKNOWN
+    """
+    from urllib.parse import urlparse, parse_qs
+    try:
+        qs = parse_qs(urlparse(url).query)
+    except Exception:
+        qs = {}
+    url_vid = None
+    for k in ("variantId", "variantid", "variant_id"):
+        if qs.get(k):
+            url_vid = qs[k][0]
+            break
+
+    try:
+        html = _rakuten_render(url)
+    except ImportError:
+        return UNKNOWN, "Playwrightが未インストール（楽天監視には必要）"
+    except Exception as e:
+        return UNKNOWN, "楽天ページ取得失敗: {}".format(e)
+
+    data = _rakuten_parse(html)
+    if not data:
+        return UNKNOWN, "楽天商品データの解析に失敗"
+
+    vid_stocks = data.get("vid_stocks", {})
+    first = data.get("first_variant", {})
+
+    target_vid = url_vid
+    if not target_vid and first.get("variantId"):
+        target_vid = first.get("variantId")
+    if (not target_vid or target_vid not in vid_stocks) and len(vid_stocks) == 1:
+        target_vid = list(vid_stocks.keys())[0]
+
+    if not target_vid or target_vid not in vid_stocks:
+        return UNKNOWN, "variantIdの在庫が特定できません（URLに ?variantId= を含めてください）"
+
+    st = vid_stocks[target_vid] or {}
+    cond = (st.get("stockCondition") or "").lower()
+    qty = st.get("quantity")
+    delivery = st.get("deliveryMessage") or ""
+    size_label = size or ""
+    if not size_label and first.get("selectorValues"):
+        size_label = first["selectorValues"][0]
+    if not size_label:
+        size_label = target_vid
+
+    detail = "{}: {}".format(size_label, delivery or cond or ("qty=" + str(qty)))
+    if cond == "sold-out" or qty == 0:
+        return SOLD_OUT, detail
+    return IN_STOCK, detail
+
+
 def check_product(product):
     """
     戻り値: (state, detail)
@@ -171,6 +381,10 @@ def check_product(product):
     url = product.get("url", "")
     size_pattern = product.get("size_pattern", "")
     stock_keyword = product.get("stock_keyword", "在庫")
+
+    # 楽天市場: Playwright でレンダリング後のJSONを読む（requestsでは取れない）
+    if "rakuten.co.jp" in url:
+        return check_rakuten(url, size_pattern)
 
     try:
         html = fetch_html(url)

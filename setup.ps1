@@ -153,6 +153,23 @@ if ($LASTEXITCODE -ne 0) {
 Write-Ok "Dependencies installed."
 
 # ------------------------------------------------------------
+# 3b) Playwright Chromium (for Rakuten market stock monitoring)
+# ------------------------------------------------------------
+Write-Step "Installing Playwright Chromium browser (for Rakuten)..."
+try {
+    & $python -m playwright install chromium
+    if ($LASTEXITCODE -eq 0) {
+        Write-Ok "Playwright Chromium installed."
+    } else {
+        Write-Warn2 "playwright install chromium returned non-zero. Rakuten monitoring may not work."
+        Write-Warn2 "Re-run later:  python -m playwright install chromium"
+    }
+} catch {
+    Write-Warn2 "Playwright Chromium install failed: $($_.Exception.Message)"
+    Write-Warn2 "Rakuten monitoring needs it. Re-run:  python -m playwright install chromium"
+}
+
+# ------------------------------------------------------------
 # 4) Discord Webhook URL (arg or prompt)
 # ------------------------------------------------------------
 Write-Step "Discord Webhook URL"

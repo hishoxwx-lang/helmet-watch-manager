@@ -15,6 +15,7 @@ Windows サーバー（ConoHa for Windows 等）上で常駐稼働すること�
 - 🔐 **パスワード認証**（ハッシュ保存、初回アクセスで設定）
 - 🪟 **Windows サービス + タスクスケジューラ** で自動常駐・定期監視（`setup.ps1` が全部設定）
 - 🇯🇵 **Webike（Shift_JIS）対応**（charset 自動判定）
+- 🛒 **楽天市場のサイズ別在庫監視**（Playwright ヘッドレスブラウザで JS レンダリング後のデータを取得。`setup.ps1` が Chromium の導入も自動化）
 
 ---
 
@@ -52,12 +53,13 @@ New-Item -ItemType Directory -Force "$env:USERPROFILE\helmet-manager" | Out-Null
 1. Python 3.12 の確認（無ければ winget でインストール）
 2. 最新ファイルを GitHub からダウンロード → `%USERPROFILE%\helmet-manager`
 3. `pip install -r requirements.txt`
-4. Discord Webhook URL の入力（スキップ可。後でUI設定可）
-5. 管理者パスワード（2回入力）→ ハッシュ化して `config.json` に保存
-6. Web アプリを **NSSM で Windows サービス化**（無ければタスクスケジューラでスタートアップ起動にフォールバック）
-7. 監視ジョブを **タスクスケジューラに5分間隔で登録**
-8. ファイアウォールで **TCP 8080 受信許可**
-9. パブリックIPを取得してアクセスURLを表示
+4. **Playwright Chromium をインストール**（楽天市場監視用・数分）
+5. Discord Webhook URL の入力（スキップ可。後でUI設定可）
+6. 管理者パスワード（2回入力）→ ハッシュ化して `config.json` に保存
+7. Web アプリを **NSSM で Windows サービス化**（無ければタスクスケジューラでスタートアップ起動にフォールバック）
+8. 監視ジョブを **タスクスケジューラに5分間隔で登録**
+9. ファイアウォールで **TCP 8080 受信許可**
+10. パブリックIPを取得してアクセスURLを表示
 
 完了すると以下が表示されます:
 
@@ -106,6 +108,7 @@ Watch task  : HelmetWatcher (every 5 min)
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+playwright install chromium   # 楽天市場監視に必要（数分・約180MB）
 
 # 監視を1回だけ実行（Discord未設定ならログのみ出力）
 python3 checker.py
@@ -148,6 +151,34 @@ Webike 以外でも、**HTML の `<option>` タグ内** にサイズパターン
    - **在庫キーワード**: option テキスト内で在庫ありを示す文字列
 
 サイト毎の文字コード（Shift_JIS / UTF-8）は `checker.py` が自動判定します。
+
+---
+
+## 🛒 楽天市場の監視について
+
+楽天市場はサイズ別の在庫データを JavaScript で動的に取得するため、**Playwright（ヘッドレス Chromium）** でページをレンダリングしてから在庫を読み取ります。
+
+### 使い方
+
+1. 商品追加フォームの URL 欄に楽天商品URLを入力
+2. 「📋 サイズ/カラー選択肢を取得」でサイズ一覧を取得し、監視したいサイズを選択
+3. 追加して監視開始
+
+### ⚠️ variantId について（重要）
+
+楽天はサイズごとに異なる `variantId` で在庫を管理します。**正確なサイズ監視には、URL に `?variantId=XXXXX` を含めてください。**
+
+- 楽天の商品ページで目的のサイズを選ぶと、URL に `?variantId=` が付与されます。その URL をそのまま登録してください。
+- variantId 無しの URL では、代表バリアントの在庫のみ判定できる場合があります。
+
+### Playwright が未インストールのとき
+
+楽天商品の監視時のみ Playwright が必要です。未インストールでも Webike / Yahoo! は動作し、楽天商品は `UNKNOWN`（未確認）になります。
+
+```bash
+pip install playwright
+playwright install chromium
+```
 
 ---
 
