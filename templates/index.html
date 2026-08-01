@@ -172,8 +172,9 @@
                   </button>
                 </form>
               </td>
-              <td>
-                <form method="post" action="{{ url_for('delete', pid=r.id) }}"
+              <td class="text-nowrap">
+                <a href="{{ url_for('edit', pid=r.id) }}" class="btn btn-sm btn-outline-secondary">編集</a>
+                <form method="post" action="{{ url_for('delete', pid=r.id) }}" class="d-inline"
                       onsubmit="return confirm('「{{ r.name }}」を削除しますか？');">
                   <button type="submit" class="btn btn-sm btn-outline-danger">削除</button>
                 </form>

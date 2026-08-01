@@ -221,6 +221,36 @@ def toggle(pid):
     return redirect(url_for("index"))
 
 
+@app.route("/edit/<int:pid>", methods=["GET", "POST"])
+@login_required
+def edit(pid):
+    """登録済み商品の編集（skuId含む全項目）。"""
+    products = load_products()
+    product = None
+    for p in products:
+        if p.get("id") == pid:
+            product = p
+            break
+    if not product:
+        flash("商品が見つかりません。", "danger")
+        return redirect(url_for("index"))
+    if request.method == "POST":
+        name = (request.form.get("name") or "").strip()
+        url = (request.form.get("url") or "").strip()
+        if not name or not url:
+            flash("名前とURLは必須です。", "danger")
+            return render_template("edit.html", product=product)
+        product["name"] = name
+        product["url"] = url
+        product["size_pattern"] = (request.form.get("size_pattern") or "").strip() or "サイズ：L"
+        product["stock_keyword"] = (request.form.get("stock_keyword") or "").strip() or "在庫"
+        product["poizon_sku_id"] = (request.form.get("poizon_sku_id") or "").strip()
+        save_json(PRODUCTS_FILE, products)
+        flash("商品を更新しました: {}".format(name), "success")
+        return redirect(url_for("index"))
+    return render_template("edit.html", product=product)
+
+
 @app.route("/delete/<int:pid>", methods=["POST"])
 @login_required
 def delete(pid):
@@ -310,6 +340,7 @@ def update():
     targets = [
         "app.py", "checker.py", "requirements.txt",
         "templates/index.html", "templates/login.html",
+        "templates/edit.html",
         "templates/settings.html", "templates/setup.html",
     ]
     errors = []
