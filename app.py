@@ -31,6 +31,7 @@ STATE_FILE = BASE_DIR / "state.json"
 CHECKER_SCRIPT = BASE_DIR / "checker.py"
 
 app = Flask(__name__)
+app.config["TEMPLATES_AUTO_RELOAD"] = True
 app.secret_key = os.environ.get(
     "HELMET_MANAGER_SECRET",
     "helmet-watch-manager-default-secret-change-me",
