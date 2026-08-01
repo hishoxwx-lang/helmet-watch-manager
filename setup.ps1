@@ -325,7 +325,7 @@ try {
 Write-Step "Detecting public IP..."
 $publicIp = $null
 try {
-    $publicIp = (Invoke-WebRequest -UseBasicParsing -Uri "https://ifconfig.me" -TimeoutSec 10).Content.Trim()
+    $publicIp = (Invoke-WebRequest -UseBasicParsing -Uri "https://api.ipify.org" -TimeoutSec 10).Content.Trim()
     Write-Ok "Public IP: $publicIp"
 } catch {
     Write-Warn2 "Could not detect public IP."
