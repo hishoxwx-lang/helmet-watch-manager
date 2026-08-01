@@ -1,4 +1,4 @@
-# 🪖 Helmet Watch Manager
+# 📦 在庫通知くん
 
 Webike 等の商品在庫を **ブラウザで管理・監視** する Web アプリ（Python / Flask）。
 複数商品を一覧管理し、定期的に在庫状況をチェック。状態が変化したときだけ **Discord 通知** を送ります。
