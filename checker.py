@@ -104,6 +104,47 @@ def check_yahoo(html, size):
     return IN_STOCK, detail
 
 
+def fetch_yahoo_variants(url):
+    """Yahoo!ショッピング商品のサイズ・カラー一覧を取得。
+    戻り値: {"sizes": [...], "colors": [...]} または {"error": "..."}
+    """
+    try:
+        html = fetch_html(url)
+    except Exception as e:
+        return {"error": "取得失敗: {}".format(e)}
+    m = re.search(
+        r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
+        html, re.S,
+    )
+    if not m:
+        return {"error": "Yahoo!商品ページのデータが見つかりません"}
+    try:
+        data = json.loads(m.group(1))
+        item = data.get("props", {}).get("pageProps", {}).get("item", {})
+        stock = item.get("stockTableTwoAxis", {})
+        first = stock.get("firstOption", {})
+        sizes = []
+        colors = []
+        for ch in first.get("choiceList", []):
+            size = ch.get("choiceName")
+            if size and size not in sizes:
+                sizes.append(size)
+            second = ch.get("secondOption", {})
+            for sc in second.get("choiceList", []):
+                color = sc.get("choiceName")
+                if color and color not in colors:
+                    colors.append(color)
+        # 1軸目がダミー(―等)のみの場合、2軸目(カラー)を実バリエーションとして使う
+        if sizes and all(s in ("―", "-", "", None) for s in sizes):
+            sizes = colors
+            colors = []
+        if not sizes:
+            return {"error": "サイズ選択肢が見つかりません"}
+        return {"sizes": sizes, "colors": colors}
+    except Exception as e:
+        return {"error": "データの解析に失敗: {}".format(e)}
+
+
 def check_product(product):
     """
     戻り値: (state, detail)

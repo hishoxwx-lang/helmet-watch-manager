@@ -17,10 +17,12 @@ from functools import wraps
 from pathlib import Path
 
 from flask import (
-    Flask, render_template, request, redirect, url_for, session, flash,
+    Flask, render_template, request, redirect, url_for, session, flash, jsonify,
 )
 
 from werkzeug.security import generate_password_hash, check_password_hash
+
+from checker import fetch_yahoo_variants
 
 BASE_DIR = Path(__file__).resolve().parent
 PRODUCTS_FILE = BASE_DIR / "products.json"
@@ -232,6 +234,19 @@ def settings():
     webhook = config.get("discord_webhook_url", "")
     webhook_masked = (webhook[:18] + "...") if len(webhook) > 18 else webhook
     return render_template("settings.html", webhook=webhook, webhook_masked=webhook_masked)
+
+
+@app.route("/api/yahoo_variants", methods=["POST"])
+@login_required
+def yahoo_variants_api():
+    """Yahoo!商品URLからサイズ/カラーの選択肢を取得"""
+    url = (request.form.get("url") or "").strip()
+    if not url:
+        return jsonify({"error": "URLを入力してください"}), 400
+    if "yahoo.co.jp" not in url:
+        return jsonify({"error": "Yahoo!ショッピングのURLを入力してください"}), 400
+    result = fetch_yahoo_variants(url)
+    return jsonify(result)
 
 
 @app.route("/run")
