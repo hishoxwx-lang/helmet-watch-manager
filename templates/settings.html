@@ -56,6 +56,39 @@
     </div>
 
     <div class="card mb-3">
+      <div class="card-header bg-white"><strong>POIZON 連動（売切れ→出品取り下げ）</strong></div>
+      <div class="card-body">
+        <p class="text-muted small mb-2">
+          仕入元が売切れたら、POIZONの対応出品を自動で取り下げます。
+          各商品の「POIZON SKU ID」設定 + ここの接続先設定 で動作します。
+          トークン:
+          {% if poizon_token %}
+            <span class="mono">{{ poizon_token_masked }}</span>
+          {% else %}
+            <span class="text-warning">未設定</span>
+          {% endif %}
+        </p>
+        <form method="post" action="{{ url_for('settings') }}">
+          <input type="hidden" name="action" value="poizon">
+          <div class="mb-2">
+            <label class="form-label">取り下げ窓口URL</label>
+            <input type="text" name="poizon_delist_url" class="form-control"
+                   placeholder="http://localhost:5050/webhook/oos" value="{{ poizon_url }}">
+          </div>
+          <div class="mb-2">
+            <label class="form-label">認証トークン <small class="text-muted">(OOS_WEBHOOK_TOKEN と同じ値)</small></label>
+            <input type="text" name="poizon_delist_token" class="form-control"
+                   placeholder="opencodestead 側の .env に設定した OOS_WEBHOOK_TOKEN" value="{{ poizon_token }}">
+          </div>
+          <button type="submit" class="btn btn-primary">保存</button>
+          <div class="form-text mt-1">
+            opencodestead プロジェクトの seller_dashboard(:5050) が受け口。同じサーバ上なら localhost でOK。
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="card mb-3">
       <div class="card-header bg-white"><strong>パスワード変更</strong></div>
       <div class="card-body">
         <form method="post" action="{{ url_for('settings') }}">

@@ -152,6 +152,7 @@ def index():
             "enabled": p.get("enabled", True),
             "site_name": site_name_of(p.get("url", "")),
             "image_url": p.get("image_url", ""),
+            "poizon_sku_id": p.get("poizon_sku_id", ""),
             "state": s.get("state"),
             "state_label": STATE_LABEL.get(s.get("state"), "未確認"),
             "detail": s.get("detail", ""),
@@ -178,6 +179,7 @@ def add():
     url = (request.form.get("url") or "").strip()
     size_pattern = (request.form.get("size_pattern") or "").strip() or "サイズ：L"
     stock_keyword = (request.form.get("stock_keyword") or "").strip() or "在庫"
+    poizon_sku_id = (request.form.get("poizon_sku_id") or "").strip()
     enabled = request.form.get("enabled") == "on"
 
     if not name or not url:
@@ -198,6 +200,7 @@ def add():
         "stock_keyword": stock_keyword,
         "enabled": enabled,
         "image_url": image_url,
+        "poizon_sku_id": poizon_sku_id,
     })
     save_json(PRODUCTS_FILE, products)
     flash("商品を追加しました: {}".format(name), "success")
@@ -249,6 +252,11 @@ def settings():
             config["discord_webhook_url"] = webhook
             save_json(CONFIG_FILE, config)
             flash("Discord Webhook URL を保存しました。", "success")
+        elif action == "poizon":
+            config["poizon_delist_url"] = (request.form.get("poizon_delist_url") or "").strip()
+            config["poizon_delist_token"] = (request.form.get("poizon_delist_token") or "").strip()
+            save_json(CONFIG_FILE, config)
+            flash("POIZON連動設定を保存しました。", "success")
         elif action == "password":
             new_pw = request.form.get("new_password") or ""
             confirm = request.form.get("confirm_password") or ""
@@ -268,7 +276,15 @@ def settings():
 
     webhook = config.get("discord_webhook_url", "")
     webhook_masked = (webhook[:18] + "...") if len(webhook) > 18 else webhook
-    return render_template("settings.html", webhook=webhook, webhook_masked=webhook_masked)
+    poizon_url = config.get("poizon_delist_url", "")
+    poizon_token = config.get("poizon_delist_token", "")
+    poizon_token_masked = (poizon_token[:6] + "...") if len(poizon_token) > 6 else poizon_token
+    return render_template(
+        "settings.html",
+        webhook=webhook, webhook_masked=webhook_masked,
+        poizon_url=poizon_url, poizon_token=poizon_token,
+        poizon_token_masked=poizon_token_masked,
+    )
 
 
 @app.route("/api/yahoo_variants", methods=["POST"])

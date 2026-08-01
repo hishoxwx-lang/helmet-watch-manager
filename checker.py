@@ -455,6 +455,44 @@ def send_discord(webhook_url, content):
         return False
 
 
+def notify_poizon_delist(product, config, detail):
+    """売切れ検知時にPOIZON出品取り下げ窓口(/webhook/oos)へPOST。
+
+    商品に poizon_sku_id が設定されている場合のみ動作(未設定なら何もしない)。
+    仕入元が売切れたらPOIZON出品を即座に取り下げる連動。
+    詳細は opencodetest/docs/STOCK_DELIST_DESIGN.md 参照。
+    """
+    sku_id = str(product.get("poizon_sku_id") or "").strip()
+    url = (config.get("poizon_delist_url") or "").strip()
+    token = (config.get("poizon_delist_token") or "").strip()
+    if not sku_id:
+        print("    -> (poizon_sku_id 未設定: POIZON連動スキップ)")
+        return False
+    if not url or not token:
+        print("    -> (poizon_delist_url/token 未設定: POIZON連動スキップ)")
+        return False
+    try:
+        r = requests.post(
+            url,
+            json={"skuId": sku_id, "event": "sold_out",
+                  "url": product.get("url", ""), "source": "stock_watch"},
+            headers={"X-Webhook-Token": token, "Content-Type": "application/json"},
+            timeout=20,
+        )
+        ok = 200 <= r.status_code < 300
+        msg = ""
+        try:
+            msg = r.json().get("message", "")
+        except Exception:
+            pass
+        print("    -> POIZON delist {}: HTTP {} {}".format(
+            "OK" if ok else "FAIL", r.status_code, msg))
+        return ok
+    except Exception as e:
+        print("    -> POIZON delist error: {}".format(e))
+        return False
+
+
 def state_label(state):
     return {IN_STOCK: "在庫あり", SOLD_OUT: "売切れ", UNKNOWN: "未確認"}.get(state, state)
 
@@ -516,6 +554,10 @@ def main():
                 print("    -> Discord notified")
             else:
                 print("    -> (Discord webhook not configured, skip notify)")
+
+        # 売切れ時のみ POIZON出品取り下げ連動(在庫通知くん→POIZON API)
+        if prev_state == IN_STOCK and new_state == SOLD_OUT:
+            notify_poizon_delist(p, config, detail)
 
         state[pid] = {
             "name": name,

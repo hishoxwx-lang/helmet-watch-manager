@@ -1,6 +1,8 @@
 {
   "password_hash": "",
   "discord_webhook_url": "",
+  "poizon_delist_url": "http://localhost:5050/webhook/oos",
+  "poizon_delist_token": "",
   "port": 8080,
   "interval_minutes": 5
 }
