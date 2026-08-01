@@ -1,0 +1,6 @@
+{
+  "password_hash": "",
+  "discord_webhook_url": "",
+  "port": 8080,
+  "interval_minutes": 5
+}
