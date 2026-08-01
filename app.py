@@ -108,6 +108,19 @@ STATE_LABEL = {
 }
 
 
+def site_name_of(url):
+    u = (url or "").lower()
+    if "yahoo.co.jp" in u:
+        return "Yahoo!ショッピング"
+    if "rakuten.co.jp" in u:
+        return "楽天市場"
+    if "webike.net" in u:
+        return "Webike"
+    if "amazon.co.jp" in u:
+        return "Amazon"
+    return "その他"
+
+
 # ---------- routes ----------
 @app.route("/")
 @login_required
@@ -125,6 +138,7 @@ def index():
             "size_pattern": p.get("size_pattern", ""),
             "stock_keyword": p.get("stock_keyword", "在庫"),
             "enabled": p.get("enabled", True),
+            "site_name": site_name_of(p.get("url", "")),
             "state": s.get("state"),
             "state_label": STATE_LABEL.get(s.get("state"), "未確認"),
             "detail": s.get("detail", ""),

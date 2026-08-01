@@ -121,6 +121,7 @@ def fetch_yahoo_variants(url):
     try:
         data = json.loads(m.group(1))
         item = data.get("props", {}).get("pageProps", {}).get("item", {})
+        name = item.get("name", "")
         stock = item.get("stockTableTwoAxis", {})
         first = stock.get("firstOption", {})
         sizes = []
@@ -140,7 +141,7 @@ def fetch_yahoo_variants(url):
             colors = []
         if not sizes:
             return {"error": "サイズ選択肢が見つかりません"}
-        return {"sizes": sizes, "colors": colors}
+        return {"name": name, "sizes": sizes, "colors": colors}
     except Exception as e:
         return {"error": "データの解析に失敗: {}".format(e)}
 
