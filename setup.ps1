@@ -181,8 +181,15 @@ do {
 
 Write-Host "     Generating password hash..."
 $env:HELMET_PW = $p1
-$hashScript = 'import os; from werkzeug.security import generate_password_hash; print(generate_password_hash(os.environ["HELMET_PW"]))'
-$pwHash = (& $python -c $hashScript)
+$tmpHashScript = Join-Path $env:TEMP "helmet_gen_hash.py"
+$pycode = @'
+import os
+from werkzeug.security import generate_password_hash
+print(generate_password_hash(os.environ["HELMET_PW"]))
+'@
+Set-Content -Path $tmpHashScript -Value $pycode -Encoding UTF8
+$pwHash = (& $python $tmpHashScript)
+Remove-Item $tmpHashScript -ErrorAction SilentlyContinue
 Remove-Item Env:\HELMET_PW -ErrorAction SilentlyContinue
 if (-not $pwHash) {
     Write-Err "Password hash generation failed."
