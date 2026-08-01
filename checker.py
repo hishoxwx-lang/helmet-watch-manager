@@ -81,6 +81,22 @@ def fetch_html(url):
     return html
 
 
+def check_yahoo(html, size):
+    """Yahoo!ショッピング: JSON(choiceName + stockText) でサイズの在庫を判定"""
+    m = re.search(
+        r'"choiceName":"' + re.escape(size) + r'".*?"stockText":"([^"]*)"',
+        html, re.S,
+    )
+    if not m:
+        return UNKNOWN, "{} の在庫情報が見つかりません".format(size)
+    stock_text = m.group(1)
+    detail = "{}: {}".format(size, stock_text or "(在庫あり)")
+    soldout = ("在庫なし", "品切れ", "売切れ", "販売終了", "販売停止")
+    if any(kw in stock_text for kw in soldout):
+        return SOLD_OUT, detail
+    return IN_STOCK, detail
+
+
 def check_product(product):
     """
     戻り値: (state, detail)
@@ -99,6 +115,10 @@ def check_product(product):
 
     if not size_pattern:
         return UNKNOWN, "サイズパターン未設定"
+
+    # Yahoo!ショッピング: JSON の choiceName + stockText で判定
+    if "yahoo.co.jp" in url:
+        return check_yahoo(html, size_pattern)
 
     # 指定サイズパターンを含む <option>...</option> を検索
     pat = re.compile(
