@@ -571,7 +571,7 @@ def check_by_glm(html, product, glm_api_key):
                 "model": "glm-5.2",
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.1,
-                "max_tokens": 500,
+                "max_tokens": 2000,
             },
             headers={
                 "Authorization": "Bearer {}".format(glm_api_key),
@@ -710,7 +710,7 @@ def fetch_variants_by_glm(url, glm_api_key):
                 "model": "glm-5.2",
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.1,
-                "max_tokens": 500,
+                "max_tokens": 2000,
             },
             headers={
                 "Authorization": "Bearer {}".format(glm_api_key),
