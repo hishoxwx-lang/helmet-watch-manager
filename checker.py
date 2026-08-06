@@ -664,43 +664,35 @@ def fetch_variants_by_glm(url, glm_api_key):
     except Exception as e:
         return {"error": "ページ取得失敗: {}".format(e)}
 
-    # HTMLから重要部分を抽出（サイズ選択 related）
+    # HTMLからサイズ関連部分を最小限に抽出（トークン節約・最大1500文字）
     important = []
-    # <title>
     m = re.search(r"<title[^>]*>(.*?)</title>", html, re.S | re.I)
     if m:
-        important.append("TITLE: " + m.group(1).strip()[:200])
+        important.append(m.group(1).strip()[:100])
 
-    # サイズ・カラー・バリエーション関連キーワード周辺
-    for kw in ("size", "サイズ", "variant", "color", "カラー", "色", "option", "select", "sku", "dropdown", "button-size"):
+    seen_positions = set()
+    for kw in ("サイズ", "size", "variant", "カラー", "color", "option", "select", "sku"):
         idx = html.lower().find(kw.lower())
         if idx >= 0:
-            start = max(0, idx - 200)
-            end = min(len(html), idx + 500)
-            snippet = html[start:end]
-            important.append(snippet)
-            if len(" ".join(important)) > 4000:
-                break
+            start = max(0, idx - 50)
+            if not any(abs(start - sp) < 100 for sp in seen_positions):
+                seen_positions.add(start)
+                end = min(len(html), idx + 200)
+                snippet = re.sub(r"<[^>]+>", " ", html[start:end])
+                snippet = re.sub(r"\s+", " ", snippet).strip()[:200]
+                important.append(snippet)
 
-    excerpt = "\n".join(important[:10])[:4000]
+    excerpt = " | ".join(important)[:1500]
     if not excerpt.strip():
         all_text = re.sub(r"<[^>]+>", " ", html)
         all_text = re.sub(r"\s+", " ", all_text).strip()
-        excerpt = all_text[:4000]
+        excerpt = all_text[:1500]
     if not excerpt.strip():
         return {"error": "HTMLにテキストが見つかりません"}
 
     prompt = (
-        "以下はECサイトの商品ページのHTML抜粋です。"
-        "この商品のサイズ選択肢とカラー選択肢を抽出してください。\n\n"
-        "HTML抜粋:\n{}\n\n"
-        "ルール:\n"
-        "- サイズ（size）: サイズ表記のリスト（例: S, M, L, XL, US7, 23cm 等）\n"
-        "- カラー（colors）: カラー/色のリスト（例: ブラック, ホワイト, レッド 等）\n"
-        "- 選択肢がない場合は空配列 [] を返す\n"
-        "- 商品名も抽出する\n\n"
-        "回答は以下のJSON形式のみ:\n"
-        '{{"name": "商品名", "sizes": ["サイズ1","サイズ2",...], "colors": ["カラー1","カラー2",...]}}'
+        "以下のHTMLからサイズとカラーをJSONで抽出:\n{}\n"
+        '{{"name":"","sizes":[],"colors":[]}}'
     ).format(excerpt)
 
     try:
