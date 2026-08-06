@@ -720,13 +720,28 @@ def fetch_variants_by_glm(url, glm_api_key):
         data = resp.json()
         content = data["choices"][0]["message"]["content"].strip()
 
-        # JSON部分を抽出
-        json_match = re.search(r'\{[^{}]*"sizes"[^{}]*\}', content, re.S)
+        # JSON部分を抽出（ネスト配列対応）
+        # ```json ... ``` 形式の対応
+        json_match = re.search(r'```json\s*(\{.*?\})\s*```', content, re.S)
         if not json_match:
-            # より広いパターン
-            json_match = re.search(r'\{.*?\}', content, re.S)
+            # 通常のJSON
+            json_match = re.search(r'\{[^{}]*"sizes"[^{}]*\}', content, re.S)
+        if not json_match:
+            # より広いパターン（配列含む）
+            json_match = re.search(r'\{.*?"sizes".*?\}', content, re.S)
+
         if json_match:
-            result = json.loads(json_match.group())
+            raw_json = json_match.group(1) if json_match.lastindex else json_match.group(0)
+            try:
+                result = json.loads(raw_json)
+            except json.JSONDecodeError:
+                # カンマやクォートの修正を試みる
+                try:
+                    cleaned = raw_json.replace("'", '"').replace("\n", "")
+                    result = json.loads(cleaned)
+                except Exception:
+                    print("    [!] GLM JSON解析失敗: {}".format(raw_json[:200]))
+                    return {"error": "GLM応答のJSON解析失敗: {}".format(raw_json[:100])}
             name = result.get("name", "")
             sizes = result.get("sizes", [])
             colors = result.get("colors", [])
@@ -739,7 +754,7 @@ def fetch_variants_by_glm(url, glm_api_key):
                 return {"error": "サイズ/カラー選択肢が見つかりませんでした"}
             return {"name": name, "sizes": sizes, "colors": colors}
 
-        return {"error": "GLM応答の解析に失敗: {}".format(content[:100])}
+        return {"error": "GLM応答の解析に失敗: {}".format(content[:200])}
     except Exception as e:
         return {"error": "GLM API通信エラー: {}".format(e)}
 
