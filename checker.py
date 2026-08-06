@@ -696,6 +696,8 @@ def fetch_variants_by_glm(url, glm_api_key):
         '{{"name":"","sizes":[],"colors":[]}}'
     ).format(excerpt)
 
+    print("    [GLMバリアント] excerpt={0}文字, prompt={1}文字".format(len(excerpt), len(prompt)))
+
     try:
         resp = requests.post(
             "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
@@ -754,7 +756,9 @@ def fetch_variants_by_glm(url, glm_api_key):
                 colors = []
             if not sizes and not colors:
                 return {"error": "サイズ/カラー選択肢が見つかりませんでした"}
-            return {"name": name, "sizes": sizes, "colors": colors}
+            print("    [GLMバリアント] 取得成功: sizes={0}, colors={1}".format(sizes, colors))
+            return {"name": name, "sizes": sizes, "colors": colors,
+                    "_debug_excerpt": excerpt[:300]}
 
         print("    [!] GLM応答解析失敗 [{0}文字]: {1}".format(len(content), content[:300]))
         return {"error": "GLM応答の解析に失敗 [{0}文字]: {1}".format(len(content), content[:200])}

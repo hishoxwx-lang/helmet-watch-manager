@@ -239,6 +239,9 @@
         }
         area.style.display = '';
         status.textContent = '✓ ' + data.sizes.length + ' サイズ' + (data.colors && data.colors.length ? ' / ' + data.colors.length + ' カラー' : '') + ' を取得。下から選ぶと自動入力されます。';
+        if (data._debug_excerpt) {
+          status.textContent += ' [debug: ' + data._debug_excerpt.substring(0,100) + '...]';
+        }
         // 商品名が取れ、名前欄が空なら自動入力
         if (data.name) {
           const nameInput = document.querySelector('[name=name]');
