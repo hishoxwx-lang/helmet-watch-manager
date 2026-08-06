@@ -275,8 +275,13 @@ def _rakuten_parse(html):
     }
 
 
-def _rakuten_render(url, wait_ms=4000):
-    """Playwright で楽天ページをレンダリングし HTML を返す。失敗時は例外を投げる。"""
+def _render_html(url, wait_text=None, wait_ms=4000):
+    """Playwright でページをレンダリングし HTML を返す。失敗時は例外を投げる。
+
+    wait_text に文字列を指定すると、ページ内にその文字列が出現するまで待つ
+    （例: 楽天は 'itemInfoSku'、ヨドバシは 'salesInfo'）。
+    タイムアウト時は wait_ms 待ってから HTML を返す。
+    """
     sync_playwright = _playwright_import()
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -293,16 +298,24 @@ def _rakuten_render(url, wait_ms=4000):
                 route.continue_()
         page.route("**/*", _block)
         page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        try:
-            page.wait_for_function(
-                "document.documentElement.outerHTML.includes('itemInfoSku')",
-                timeout=10000,
-            )
-        except Exception:
+        if wait_text:
+            try:
+                page.wait_for_function(
+                    "document.documentElement.outerHTML.includes('{}')".format(wait_text),
+                    timeout=10000,
+                )
+            except Exception:
+                page.wait_for_timeout(wait_ms)
+        else:
             page.wait_for_timeout(wait_ms)
         html = page.content()
         browser.close()
     return html
+
+
+def _rakuten_render(url, wait_ms=4000):
+    """楽天ページ用ラッパ（後方互換）。"""
+    return _render_html(url, wait_text="itemInfoSku", wait_ms=wait_ms)
 
 
 def fetch_rakuten_variants(url):
@@ -388,22 +401,29 @@ def check_rakuten(url, size):
     return IN_STOCK, detail
 
 
-def check_yodobashi(html, stock_keyword=""):
+def check_yodobashi(url, stock_keyword=""):
     """ヨドバシカメラ: div.salesInfo のテキストで在庫を判定。
 
-    ヨドバシはサーバーサイドレンダリングのHTMLで、div.salesInfo に
-    在庫状態（「在庫あり」「在庫切れ」「予定数の販売を終了しました」等）が
-    テキストとして含まれる。サイズ選択は不要（URL=商品単位）。
+    ヨドバシはAkamaiのBOT対策で requests を弾くため、Playwright(ヘッドレス
+    Chromium)でレンダリングしたHTMLから div.salesInfo を抽出する。
+    サイズ選択は不要（URL=商品単位）。
 
     戻り値: (state, detail)
     """
+    try:
+        html = _render_html(url, wait_text="salesInfo")
+    except ImportError:
+        return UNKNOWN, "Playwrightが未インストール（ヨドバシ監視には必要）"
+    except Exception as e:
+        return UNKNOWN, "ヨドバシページ取得失敗: {}".format(e)
+
     # div.salesInfo を正規表現で抽出（class名に salesInfo を含む div）
     m = re.search(
         r'<div[^>]*class="[^"]*salesInfo[^"]*"[^>]*>(.*?)</div>',
         html, re.S | re.IGNORECASE,
     )
     if not m:
-        # フォールバック: id="salesInfo" 
+        # フォールバック: id="salesInfo"
         m = re.search(
             r'<div[^>]*id="[^"]*salesInfo[^"]*"[^>]*>(.*?)</div>',
             html, re.S | re.IGNORECASE,
@@ -454,15 +474,15 @@ def check_product(product):
     if "rakuten.co.jp" in url:
         return check_rakuten(url, size_pattern)
 
+    # ヨドバシカメラ: Akamai BOT対策のため Playwright でレンダリング
+    if "yodobashi.com" in url:
+        return check_yodobashi(url, stock_keyword)
+
     try:
         html = fetch_html(url)
     except Exception as e:
         print("  [!] Fetch failed: {}".format(e))
         return UNKNOWN, "取得失敗: {}".format(e)
-
-    # ヨドバシカメラ: div.salesInfo のテキストで判定（サイズ不要）
-    if "yodobashi.com" in url:
-        return check_yodobashi(html, stock_keyword)
 
     # Yahoo!ショッピング: JSON の choiceName + stockText で判定
     if "yahoo.co.jp" in url:
