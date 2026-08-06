@@ -84,6 +84,35 @@
     </div>
 
     <div class="card mb-3">
+      <div class="card-header bg-white"><strong>🛒 POIZON API（出品一覧取得用）</strong></div>
+      <div class="card-body">
+        <p class="text-muted small mb-2">
+          POIZON Open Platform のAPI認証情報。apiId=51で出品一覧を取得します。<br>
+          設定済み:
+          {% if poizon_api_id %}
+            <span class="mono">{{ poizon_api_id_masked }}</span>
+          {% else %}
+            <span class="text-warning">未設定</span>
+          {% endif %}
+        </p>
+        <form method="post" action="{{ url_for('settings') }}">
+          <input type="hidden" name="action" value="poizon_api">
+          <div class="mb-2">
+            <label class="form-label">POIZON API ID <small class="text-muted">(app_key)</small></label>
+            <input type="text" name="poizon_api_id" class="form-control"
+                   placeholder="POIZON_API_ID" value="{{ poizon_api_id }}">
+          </div>
+          <div class="mb-2">
+            <label class="form-label">POIZON API KEY <small class="text-muted">(app_secret)</small></label>
+            <input type="text" name="poizon_api_key" class="form-control"
+                   placeholder="POIZON_API_KEY" value="{{ poizon_api_key }}">
+          </div>
+          <button type="submit" class="btn btn-primary">保存</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="card mb-3">
       <div class="card-header bg-white"><strong>POIZON 連動（売切れ→出品取り下げ）</strong></div>
       <div class="card-body">
         <p class="text-muted small mb-2">

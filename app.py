@@ -299,6 +299,11 @@ def settings():
             config["glm_api_key"] = (request.form.get("glm_api_key") or "").strip()
             save_json(CONFIG_FILE, config)
             flash("GLM API Key を保存しました。AI判定が有効になります。", "success")
+        elif action == "poizon_api":
+            config["poizon_api_id"] = (request.form.get("poizon_api_id") or "").strip()
+            config["poizon_api_key"] = (request.form.get("poizon_api_key") or "").strip()
+            save_json(CONFIG_FILE, config)
+            flash("POIZON API設定を保存しました。", "success")
         elif action == "password":
             new_pw = request.form.get("new_password") or ""
             confirm = request.form.get("confirm_password") or ""
@@ -323,12 +328,17 @@ def settings():
     poizon_token_masked = (poizon_token[:6] + "...") if len(poizon_token) > 6 else poizon_token
     glm_key = config.get("glm_api_key", "")
     glm_key_masked = (glm_key[:8] + "...") if len(glm_key) > 8 else glm_key
+    poizon_api_id = config.get("poizon_api_id", "")
+    poizon_api_key = config.get("poizon_api_key", "")
+    poizon_api_id_masked = (poizon_api_id[:6] + "...") if len(poizon_api_id) > 6 else poizon_api_id
     return render_template(
         "settings.html",
         webhook=webhook, webhook_masked=webhook_masked,
         poizon_url=poizon_url, poizon_token=poizon_token,
         poizon_token_masked=poizon_token_masked,
         glm_key=glm_key, glm_key_masked=glm_key_masked,
+        poizon_api_id=poizon_api_id, poizon_api_key=poizon_api_key,
+        poizon_api_id_masked=poizon_api_id_masked,
     )
 
 
@@ -353,9 +363,9 @@ def update():
     import os as _os
     base = "https://raw.githubusercontent.com/hishoxwx-lang/helmet-watch-manager/main/"
     targets = [
-        "app.py", "checker.py", "requirements.txt",
+        "app.py", "checker.py", "poizon_api.py", "requirements.txt",
         "templates/index.html", "templates/login.html",
-        "templates/edit.html",
+        "templates/edit.html", "templates/poizon.html",
         "templates/settings.html", "templates/setup.html",
     ]
     errors = []
@@ -455,6 +465,140 @@ def setup():
             flash("パスワードを設定しました。ログインしてください。", "success")
             return redirect(url_for("login"))
     return render_template("setup.html")
+
+
+# ==================== POIZON 出品管理 ====================
+
+POIZON_LINKS_FILE = BASE_DIR / "poizon_links.json"
+
+
+def load_poizon_links():
+    """POIZON出品と仕入元URLの紐付けを読み込む。
+    形式: {"skuId": {"url": "...", "name": "...", "enabled": true}}
+    """
+    return load_json(POIZON_LINKS_FILE, {})
+
+
+def save_poizon_links(links):
+    with open(POIZON_LINKS_FILE, "w", encoding="utf-8") as f:
+        json.dump(links, f, ensure_ascii=False, indent=2)
+
+
+@app.route("/poizon")
+@login_required
+def poizon():
+    """POIZON出品一覧ページ"""
+    config = load_config()
+    links = load_poizon_links()
+
+    # POIZON API ID/KEY の確認
+    has_api = bool((config.get("poizon_api_id") or "").strip() and
+                   (config.get("poizon_api_key") or "").strip())
+
+    # API一覧は JavaScript（fetch API）で非同期取得する（ページ表示をブロックしない）
+    return render_template(
+        "poizon.html",
+        has_api=has_api,
+        links=links,
+    )
+
+
+@app.route("/api/poizon/listings")
+@login_required
+def poizon_listings_api():
+    """POIZON出品一覧をJSONで返す（非同期API）"""
+    from poizon_api import get_active_listings
+    config = load_config()
+    result = get_active_listings(config)
+
+    if isinstance(result, dict) and "error" in result:
+        return jsonify(result), 200  # エラーも200で返す（JS側で表示）
+
+    # 紐付け情報を付与
+    links = load_poizon_links()
+    enriched = []
+    for item in result:
+        sku_id = str(item.get("skuId", ""))
+        link_info = links.get(sku_id, {})
+        enriched.append({
+            "sellerBiddingNo": item.get("sellerBiddingNo", ""),
+            "skuId": sku_id,
+            "spuId": item.get("spuId", ""),
+            "price": item.get("price", 0),
+            "currency": item.get("currency", ""),
+            "tradeStatus": item.get("tradeStatus", 0),
+            "tradeSubStatus": item.get("tradeSubStatus", 0),
+            "quantity": item.get("quantity", 0),
+            "source_url": link_info.get("url", ""),
+            "source_name": link_info.get("name", ""),
+            "linked": bool(link_info.get("url")),
+            "monitoring": link_info.get("enabled", False),
+        })
+
+    return jsonify({"listings": enriched})
+
+
+@app.route("/api/poizon/link", methods=["POST"])
+@login_required
+def poizon_link_api():
+    """POIZON出品に仕入元URLを紐付ける / 監視ON-OFF"""
+    sku_id = (request.form.get("sku_id") or "").strip()
+    url = (request.form.get("url") or "").strip()
+    name = (request.form.get("name") or "").strip()
+    enabled = request.form.get("enabled") != "off"
+
+    if not sku_id:
+        return jsonify({"error": "skuIdが必要"}), 400
+
+    links = load_poizon_links()
+
+    if request.form.get("action") == "unlink":
+        links.pop(sku_id, None)
+        save_poizon_links(links)
+        return jsonify({"ok": True})
+
+    if not url:
+        return jsonify({"error": "URLが必要"}), 400
+
+    links[sku_id] = {
+        "url": url,
+        "name": name,
+        "enabled": enabled,
+    }
+    save_poizon_links(links)
+
+    # products.json にも追加（監視対象にする）
+    products = load_products()
+    # 既存確認（skuId一致）
+    existing = None
+    for p in products:
+        if str(p.get("poizon_sku_id", "")) == sku_id:
+            existing = p
+            break
+
+    if existing:
+        existing["url"] = url
+        existing["name"] = name or existing.get("name", "")
+        existing["enabled"] = enabled
+    else:
+        image_url = ""
+        try:
+            image_url = fetch_og_image(url)
+        except Exception:
+            pass
+        products.append({
+            "id": next_product_id(products),
+            "name": name or "POIZON:{}".format(sku_id),
+            "url": url,
+            "size_pattern": "",
+            "stock_keyword": "",
+            "enabled": enabled,
+            "image_url": image_url,
+            "poizon_sku_id": sku_id,
+        })
+
+    save_json(PRODUCTS_FILE, products)
+    return jsonify({"ok": True})
 
 
 # ---------- main ----------
