@@ -275,28 +275,37 @@ def _rakuten_parse(html):
     }
 
 
-def _render_html(url, wait_text=None, wait_ms=4000):
+def _render_html(url, wait_text=None, wait_ms=4000, engine="chromium", block_resources=True):
     """Playwright でページをレンダリングし HTML を返す。失敗時は例外を投げる。
 
     wait_text に文字列を指定すると、ページ内にその文字列が出現するまで待つ
     （例: 楽天は 'itemInfoSku'、ヨドバシは 'salesInfo'）。
     タイムアウト時は wait_ms 待ってから HTML を返す。
+
+    engine: 'chromium' (デフォルト) または 'firefox'
+    block_resources: True なら画像・CSS等をブロックして高速化。
+      BOT対策が厳しいサイト(Akamai等)では False にすることで
+      リソースブロックのbot特徴を隠す。
     """
     sync_playwright = _playwright_import()
     with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--blink-settings=imagesEnabled=false"],
-        )
+        launcher = p.chromium if engine == "chromium" else p.firefox
+        launch_kwargs = {"headless": True}
+        if engine == "chromium":
+            launch_kwargs["args"] = [
+                "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
+                "--blink-settings=imagesEnabled=false",
+            ]
+        browser = launcher.launch(**launch_kwargs)
         ctx = browser.new_context(user_agent=USER_AGENT, locale="ja-JP")
         page = ctx.new_page()
-        # 画像・CSS・フォントをブロックして高速化
-        def _block(route):
-            if route.request.resource_type in ("image", "stylesheet", "font", "media"):
-                route.abort()
-            else:
-                route.continue_()
-        page.route("**/*", _block)
+        if block_resources:
+            def _block(route):
+                if route.request.resource_type in ("image", "stylesheet", "font", "media"):
+                    route.abort()
+                else:
+                    route.continue_()
+            page.route("**/*", _block)
         page.goto(url, wait_until="domcontentloaded", timeout=30000)
         if wait_text:
             try:
@@ -411,7 +420,7 @@ def check_yodobashi(url, stock_keyword=""):
     戻り値: (state, detail)
     """
     try:
-        html = _render_html(url, wait_text="salesInfo")
+        html = _render_html(url, wait_text="salesInfo", engine="firefox", block_resources=False)
     except ImportError:
         return UNKNOWN, "Playwrightが未インストール（ヨドバシ監視には必要）"
     except Exception as e:
