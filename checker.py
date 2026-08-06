@@ -566,7 +566,7 @@ def check_by_glm(html, product, glm_api_key):
 
     try:
         resp = requests.post(
-            "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+            "https://api.z.ai/api/paas/v4/chat/completions",
             json={
                 "model": "glm-4-flash",
                 "messages": [{"role": "user", "content": prompt}],
