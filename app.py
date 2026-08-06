@@ -291,6 +291,10 @@ def settings():
             config["poizon_delist_token"] = (request.form.get("poizon_delist_token") or "").strip()
             save_json(CONFIG_FILE, config)
             flash("POIZON連動設定を保存しました。", "success")
+        elif action == "glm":
+            config["glm_api_key"] = (request.form.get("glm_api_key") or "").strip()
+            save_json(CONFIG_FILE, config)
+            flash("GLM API Key を保存しました。AI判定が有効になります。", "success")
         elif action == "password":
             new_pw = request.form.get("new_password") or ""
             confirm = request.form.get("confirm_password") or ""
@@ -313,11 +317,14 @@ def settings():
     poizon_url = config.get("poizon_delist_url", "")
     poizon_token = config.get("poizon_delist_token", "")
     poizon_token_masked = (poizon_token[:6] + "...") if len(poizon_token) > 6 else poizon_token
+    glm_key = config.get("glm_api_key", "")
+    glm_key_masked = (glm_key[:8] + "...") if len(glm_key) > 8 else glm_key
     return render_template(
         "settings.html",
         webhook=webhook, webhook_masked=webhook_masked,
         poizon_url=poizon_url, poizon_token=poizon_token,
         poizon_token_masked=poizon_token_masked,
+        glm_key=glm_key, glm_key_masked=glm_key_masked,
     )
 
 

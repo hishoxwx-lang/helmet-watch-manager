@@ -56,6 +56,34 @@
     </div>
 
     <div class="card mb-3">
+      <div class="card-header bg-white"><strong>🤖 AI在庫判定（GLM API）</strong></div>
+      <div class="card-body">
+        <p class="text-muted small mb-2">
+          キーワードで判定できないサイト（ヨドバシ等）をGLM APIでAI判定します。<br>
+          設定済み:
+          {% if glm_key %}
+            <span class="mono">{{ glm_key_masked }}</span>
+          {% else %}
+            <span class="text-warning">未設定（キーワード判定のみ）</span>
+          {% endif %}
+        </p>
+        <form method="post" action="{{ url_for('settings') }}">
+          <input type="hidden" name="action" value="glm">
+          <label class="form-label">GLM API Key</label>
+          <div class="input-group">
+            <input type="text" name="glm_api_key" class="form-control"
+                   placeholder="Z.AI (智譜) のAPIキー" value="{{ glm_key }}">
+            <button type="submit" class="btn btn-primary">保存</button>
+          </div>
+          <div class="form-text">
+            <a href="https://open.bigmodel.cn/" target="_blank">Z.AI</a> で取得。
+            glm-4-flash（高速・低コスト）を使用。在庫判定1回あたり約0.001円。
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="card mb-3">
       <div class="card-header bg-white"><strong>POIZON 連動（売切れ→出品取り下げ）</strong></div>
       <div class="card-body">
         <p class="text-muted small mb-2">

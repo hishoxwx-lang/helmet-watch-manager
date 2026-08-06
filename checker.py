@@ -410,133 +410,276 @@ def check_rakuten(url, size):
     return IN_STOCK, detail
 
 
-def check_yodobashi(url, stock_keyword=""):
-    """ヨドバシカメラ: div.salesInfo のテキストで在庫を判定。
+def fetch_html_auto(url):
+    """HTML を取得する。requests → curl_cffi の順でフォールバック。
 
-    ヨドバシはAkamaiのBOT対策で requests/Playwright を弾くため、
-    curl_cffi (TLS指紋偽装ライブラリ) でHTMLを取得する。
-    サイズ選択は不要（URL=商品単位）。
+    requests が弾かれた場合(Akamai/Cloudflare等)、curl_cffi の
+    impersonate=chrome で再試行する。
+    """
+    # 1st: 通常の requests
+    try:
+        return fetch_html(url)
+    except Exception as req_err:
+        print("    -> requests failed, trying curl_cffi...")
+        # 2nd: curl_cffi (TLS指紋偽装)
+        try:
+            from curl_cffi import requests as cffi_requests
+            r = cffi_requests.get(url, impersonate="chrome", timeout=30)
+            r.raise_for_status()
+            return r.text
+        except ImportError:
+            raise req_err  # curl_cffi未インストールなら元のエラー
+        except Exception:
+            raise
+
+
+# ==================== 汎用在庫判定エンジン ====================
+
+# 共通の売切れキーワード（日本のECサイトで広く使われる）
+SOLDOUT_KEYWORDS = (
+    "在庫切れ", "在庫なし", "品切れ", "売切れ", "売り切れ",
+    "販売終了", "販売を終了しました", "販売休止", "販売停止",
+    "入荷時期未定", "入荷未定", "一時的に在庫切れ",
+    "予定数の販売を終了しました",
+    "在庫がございません", "ご注文いただけません",
+    "out of stock", "sold out", "unavailable",
+)
+
+# 共通の在庫ありキーワード
+INSTOCK_KEYWORDS = (
+    "在庫あり", "在庫有り", "在庫しています",
+    "in stock", "available",
+)
+
+
+def check_by_keywords(html, stock_keyword="", size_pattern=""):
+    """キーワードベースの汎用在庫判定。
+
+    1. size_pattern があればそれを含む要素付近を探す
+    2. 売切れキーワードがあれば SOLD_OUT
+    3. 在庫ありキーワード or ユーザー指定キーワードがあれば IN_STOCK
+
+    戻り値: (state, detail) or None（判定できなかった場合）
+    """
+    # サイズ指定がある場合: そのサイズ周辺のテキストを抽出
+    search_text = html
+    if size_pattern:
+        # <option> タグ内を探す（Webike方式）
+        pat = re.compile(r"<option\b[^>]*>(.*?)</option>", re.IGNORECASE | re.DOTALL)
+        target = None
+        for m in pat.finditer(html):
+            text = re.sub(r"\s+", " ", m.group(1)).strip()
+            if size_pattern in text:
+                target = text
+                break
+        if target:
+            # option内でキーワード判定
+            for kw in SOLDOUT_KEYWORDS:
+                if kw in target:
+                    return SOLD_OUT, target
+            if stock_keyword and stock_keyword in target:
+                return IN_STOCK, target
+            for kw in INSTOCK_KEYWORDS:
+                if kw in target:
+                    return IN_STOCK, target
+            return SOLD_OUT, target  # option見つかったがキーワード無し→売切れ扱い
+        # option無しはsize_pattern周辺のテキストで判定
+        idx = html.find(size_pattern)
+        if idx >= 0:
+            start = max(0, idx - 500)
+            end = min(len(html), idx + 500)
+            search_text = html[start:end]
+
+    # テキスト化（タグ除去）
+    text = re.sub(r"<[^>]+>", " ", search_text)
+    text = re.sub(r"\s+", " ", text).strip()
+
+    # 売切れキーワード
+    for kw in SOLDOUT_KEYWORDS:
+        if kw in text:
+            return SOLD_OUT, kw
+
+    # 在庫ありキーワード
+    for kw in INSTOCK_KEYWORDS:
+        if kw in text:
+            return IN_STOCK, kw
+
+    # ユーザー指定キーワード
+    if stock_keyword and stock_keyword in text:
+        return IN_STOCK, stock_keyword
+
+    return None  # 判定できず
+
+
+def check_by_glm(html, product, glm_api_key):
+    """GLM API でHTMLを解析して在庫判定。
+
+    HTML全体ではなく、商品名・価格・カートボタン周辺など
+    重要な部分を抽出して投げる（トークン節約）。
+    """
+    # HTMLから重要部分を抽出（最大3000文字）
+    # 商品名、カート周辺、在庫表示周辺
+    important = []
+
+    # <title> タグ
+    m = re.search(r"<title[^>]*>(.*?)</title>", html, re.S | re.I)
+    if m:
+        important.append("TITLE: " + m.group(1).strip()[:200])
+
+    # 在庫・カート関連キーワード周辺
+    for kw in ("在庫", "売切", "品切", "cart", " Cart", "カート", "購入", "販売", "stock", "sold", "salesInfo", "btnCart"):
+        idx = html.lower().find(kw.lower())
+        if idx >= 0:
+            start = max(0, idx - 200)
+            end = min(len(html), idx + 300)
+            snippet = re.sub(r"<[^>]+>", " ", html[start:end])
+            snippet = re.sub(r"\s+", " ", snippet).strip()[:300]
+            important.append(snippet)
+            if len(" ".join(important)) > 3000:
+                break
+
+    excerpt = "\n".join(important[:8])[:3000]
+
+    # 重要部分が抽出できなくても、HTML全体の先頭部分をフォールバックとして使う
+    if not excerpt.strip():
+        # HTMLタグを除去した全文テキストの先頭3000文字
+        all_text = re.sub(r"<[^>]+>", " ", html)
+        all_text = re.sub(r"\s+", " ", all_text).strip()
+        excerpt = all_text[:3000]
+    if not excerpt.strip():
+        return None, "GLM判定スキップ: HTMLにテキストが見つかりません"
+
+    name = product.get("name", "")
+    size = product.get("size_pattern", "")
+
+    prompt = (
+        "以下はECサイトの商品ページのHTML抜粋です。"
+        "この商品の在庫状態を判定してください。\n\n"
+        "商品名: {}\nサイズ: {}\n\n"
+        "HTML抜粋:\n{}\n\n"
+        "判定基準:\n"
+        "- 「在庫あり」「購入可能」「カートに入る」等 → IN_STOCK\n"
+        "- 「在庫切れ」「売切れ」「品切れ」「販売終了」「予定数の販売を終了」等 → SOLD_OUT\n\n"
+        "回答は以下のJSON形式のみ（他のテキストは不要）:\n"
+        '{{"state": "IN_STOCK" or "SOLD_OUT", "reason": "判定理由（日本語・簡潔に）"}}'
+    ).format(name, size or "(指定なし)", excerpt)
+
+    try:
+        resp = requests.post(
+            "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+            json={
+                "model": "glm-4-flash",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.1,
+                "max_tokens": 200,
+            },
+            headers={
+                "Authorization": "Bearer {}".format(glm_api_key),
+                "Content-Type": "application/json",
+            },
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            return None, "GLM API エラー: HTTP {}".format(resp.status_code)
+
+        data = resp.json()
+        content = data["choices"][0]["message"]["content"].strip()
+
+        # JSON部分を抽出（```json ... ``` で囲まれている場合も対応）
+        json_match = re.search(r'\{[^}]*"state"[^}]*\}', content, re.S)
+        if json_match:
+            result = json.loads(json_match.group())
+            state_str = result.get("state", "").upper()
+            reason = result.get("reason", "")
+            if "IN_STOCK" in state_str:
+                return IN_STOCK, "GLM判定: {}".format(reason)
+            elif "SOLD_OUT" in state_str or "SOLD" in state_str:
+                return SOLD_OUT, "GLM判定: {}".format(reason)
+            return None, "GLM判定不明: {}".format(content[:100])
+
+        # JSONパース失敗 — 生テキストから推測
+        low = content.lower()
+        if "sold" in low or "売切" in content or "品切" in content or "在庫切" in content:
+            return SOLD_OUT, "GLM判定(テキスト): {}".format(content[:100])
+        if "in_stock" in low or "在庫あり" in content or "購入" in content:
+            return IN_STOCK, "GLM判定(テキスト): {}".format(content[:100])
+
+        return None, "GLM判定解析失敗: {}".format(content[:100])
+    except Exception as e:
+        return None, "GLM API通信エラー: {}".format(e)
+
+
+def check_generic(url, product, config):
+    """汎用在庫判定エンジン（任意のサイトに対応）。
+
+    処理フロー:
+    1. HTML取得: requests → curl_cffi (自動フォールバック)
+    2. キーワード判定（コストゼロ・高速）
+    3. ダメなら GLM API で判定（設定済みの場合）
 
     戻り値: (state, detail)
     """
+    # 1. HTML取得
     try:
-        from curl_cffi import requests as cffi_requests
-    except ImportError:
-        return UNKNOWN, "curl_cffiが未インストール（pip install curl_cffi）"
-
-    try:
-        r = cffi_requests.get(url, impersonate="chrome", timeout=30)
-        html = r.text
+        html = fetch_html_auto(url)
     except Exception as e:
-        return UNKNOWN, "ヨドバシページ取得失敗: {}".format(e)
+        print("  [!] Fetch failed: {}".format(e))
+        return UNKNOWN, "取得失敗: {}".format(e)
 
-    # div.salesInfo を正規表現で抽出（class名に salesInfo を含む div）
-    m = re.search(
-        r'<div[^>]*class="[^"]*salesInfo[^"]*"[^>]*>(.*?)</div>',
-        html, re.S | re.IGNORECASE,
-    )
-    if not m:
-        # フォールバック: id="salesInfo"
-        m = re.search(
-            r'<div[^>]*id="[^"]*salesInfo[^"]*"[^>]*>(.*?)</div>',
-            html, re.S | re.IGNORECASE,
-        )
-    if not m:
-        # デバッグ: HTMLの一部をエラーメッセージに含める（構造調査用）
-        # 在庫関連キーワードの周辺を抽出
-        debug_snippets = []
-        for kw in ("在庫", "salesInfo", "soldOut", "stock", "販売", "btnCart", "cartBtn", "purchase"):
-            idx = html.find(kw)
-            if idx >= 0:
-                start = max(0, idx - 100)
-                end = min(len(html), idx + 200)
-                snippet = html[start:end].replace("\n", " ").replace("\r", "")
-                debug_snippets.append("[{}] ...{}...".format(kw, snippet))
-        if debug_snippets:
-            return UNKNOWN, "salesInfo無し / HTML構造: " + " | ".join(debug_snippets[:3])
-        return UNKNOWN, "salesInfo が見つかりません（HTML長: {}文字・キーワード無し）".format(len(html))
+    size_pattern = product.get("size_pattern", "")
+    stock_keyword = product.get("stock_keyword", "")
 
-    raw = m.group(1)
-    # HTMLタグを除去してテキスト化
-    text = re.sub(r"<[^>]+>", " ", raw)
-    text = re.sub(r"\s+", " ", text).strip()
+    # 2. キーワード判定
+    result = check_by_keywords(html, stock_keyword, size_pattern)
+    if result:
+        return result
 
-    # 売切れキーワード（複数パターンに対応）
-    soldout_keywords = (
-        "予定数の販売を終了しました",
-        "在庫切れ",
-        "品切れ",
-        "入荷時期未定",
-        "販売終了",
-        "販売を終了しました",
-    )
-    for kw in soldout_keywords:
-        if kw in text:
-            return SOLD_OUT, text
+    # 3. GLM API 判定（フォールバック）
+    glm_key = (config.get("glm_api_key") or "").strip()
+    if glm_key:
+        print("    -> キーワード判定できず、GLM APIで判定中...")
+        state, detail = check_by_glm(html, product, glm_key)
+        if state:
+            return state, detail
+        return UNKNOWN, detail or "GLM判定でも判定できませんでした"
 
-    # ユーザー指定の在庫キーワードがあれば、それが含まれていれば在庫あり
-    if stock_keyword and stock_keyword in text:
-        return IN_STOCK, text
-
-    # salesInfo があり、売切れキーワードがなければ在庫ありとみなす
-    if text:
-        return IN_STOCK, text
-
-    return UNKNOWN, "salesInfo のテキストが空です"
+    # GLM未設定ならUNKNOWN
+    return UNKNOWN, "キーワードで判定できず（設定画面でGLM API Keyを追加するとAI判定が有効になります）"
 
 
-def check_product(product):
+def check_product(product, config=None):
     """
     戻り値: (state, detail)
       state: IN_STOCK / SOLD_OUT / UNKNOWN
-      detail: option テキスト（サイズ + 在庫情報）
+      detail: 在庫情報テキスト
+
+    サイト別ルーティング:
+    - 楽天市場 → check_rakuten (Playwright・JSON)
+    - Yahoo!ショッピング → check_yahoo (JSON)
+    - その他すべて → check_generic (汎用エンジン)
     """
     url = product.get("url", "")
     size_pattern = product.get("size_pattern", "")
-    stock_keyword = product.get("stock_keyword", "在庫")
+    stock_keyword = product.get("stock_keyword", "")
+    if config is None:
+        config = load_json(CONFIG_FILE, {})
 
     # 楽天市場: Playwright でレンダリング後のJSONを読む（requestsでは取れない）
     if "rakuten.co.jp" in url:
         return check_rakuten(url, size_pattern)
 
-    # ヨドバシカメラ: Akamai BOT対策のため Playwright でレンダリング
-    if "yodobashi.com" in url:
-        return check_yodobashi(url, stock_keyword)
-
-    try:
-        html = fetch_html(url)
-    except Exception as e:
-        print("  [!] Fetch failed: {}".format(e))
-        return UNKNOWN, "取得失敗: {}".format(e)
-
     # Yahoo!ショッピング: JSON の choiceName + stockText で判定
     if "yahoo.co.jp" in url:
         if not size_pattern:
             return UNKNOWN, "サイズパターン未設定"
+        try:
+            html = fetch_html_auto(url)
+        except Exception as e:
+            return UNKNOWN, "取得失敗: {}".format(e)
         return check_yahoo(html, size_pattern)
 
-    # Webike等: <option> タグでサイズ別在庫判定
-    if not size_pattern:
-        return UNKNOWN, "サイズパターン未設定"
-
-    # 指定サイズパターンを含む <option>...</option> を検索
-    pat = re.compile(
-        r"<option\b[^>]*>(.*?)</option>",
-        re.IGNORECASE | re.DOTALL,
-    )
-    target = None
-    for m in pat.finditer(html):
-        text = re.sub(r"\s+", " ", m.group(1)).strip()
-        if size_pattern in text:
-            target = text
-            break
-
-    if not target:
-        return SOLD_OUT, "{} の option が見つかりません".format(size_pattern)
-
-    if stock_keyword and stock_keyword in target:
-        return IN_STOCK, target
-    return SOLD_OUT, target
+    # その他すべてのサイト: 汎用判定エンジン
+    return check_generic(url, product, config)
 
 
 def send_discord(webhook_url, content):
@@ -621,7 +764,7 @@ def main():
         url = p.get("url", "")
         print("- checking: {}".format(name))
 
-        new_state, detail = check_product(p)
+        new_state, detail = check_product(p, config)
         prev = state.get(pid, {})
         prev_state = prev.get("state")
 
