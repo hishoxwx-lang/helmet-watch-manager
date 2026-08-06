@@ -430,6 +430,15 @@ def check_yodobashi(url, stock_keyword=""):
     except Exception as e:
         return UNKNOWN, "ヨドバシページ取得失敗: {}".format(e)
 
+    # DEBUG: HTMLの先頭をダンプ（本番後で削除）
+    import os
+    debug_path = os.path.join(os.path.dirname(__file__), "debug_yodobashi.html")
+    try:
+        with open(debug_path, "w", encoding="utf-8") as df:
+            df.write(html[:5000])
+    except Exception:
+        pass
+
     # div.salesInfo を正規表現で抽出（class名に salesInfo を含む div）
     m = re.search(
         r'<div[^>]*class="[^"]*salesInfo[^"]*"[^>]*>(.*?)</div>',
