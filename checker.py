@@ -430,15 +430,6 @@ def check_yodobashi(url, stock_keyword=""):
     except Exception as e:
         return UNKNOWN, "ヨドバシページ取得失敗: {}".format(e)
 
-    # DEBUG: HTMLの先頭をダンプ（本番後で削除）
-    import os
-    debug_path = os.path.join(os.path.dirname(__file__), "debug_yodobashi.html")
-    try:
-        with open(debug_path, "w", encoding="utf-8") as df:
-            df.write(html[:5000])
-    except Exception:
-        pass
-
     # div.salesInfo を正規表現で抽出（class名に salesInfo を含む div）
     m = re.search(
         r'<div[^>]*class="[^"]*salesInfo[^"]*"[^>]*>(.*?)</div>',
@@ -451,7 +442,19 @@ def check_yodobashi(url, stock_keyword=""):
             html, re.S | re.IGNORECASE,
         )
     if not m:
-        return UNKNOWN, "salesInfo が見つかりません（ページ構造変更の可能性）"
+        # デバッグ: HTMLの一部をエラーメッセージに含める（構造調査用）
+        # 在庫関連キーワードの周辺を抽出
+        debug_snippets = []
+        for kw in ("在庫", "salesInfo", "soldOut", "stock", "販売", "btnCart", "cartBtn", "purchase"):
+            idx = html.find(kw)
+            if idx >= 0:
+                start = max(0, idx - 100)
+                end = min(len(html), idx + 200)
+                snippet = html[start:end].replace("\n", " ").replace("\r", "")
+                debug_snippets.append("[{}] ...{}...".format(kw, snippet))
+        if debug_snippets:
+            return UNKNOWN, "salesInfo無し / HTML構造: " + " | ".join(debug_snippets[:3])
+        return UNKNOWN, "salesInfo が見つかりません（HTML長: {}文字・キーワード無し）".format(len(html))
 
     raw = m.group(1)
     # HTMLタグを除去してテキスト化
