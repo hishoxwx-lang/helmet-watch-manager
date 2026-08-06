@@ -413,16 +413,20 @@ def check_rakuten(url, size):
 def check_yodobashi(url, stock_keyword=""):
     """ヨドバシカメラ: div.salesInfo のテキストで在庫を判定。
 
-    ヨドバシはAkamaiのBOT対策で requests を弾くため、Playwright(ヘッドレス
-    Chromium)でレンダリングしたHTMLから div.salesInfo を抽出する。
+    ヨドバシはAkamaiのBOT対策で requests/Playwright を弾くため、
+    curl_cffi (TLS指紋偽装ライブラリ) でHTMLを取得する。
     サイズ選択は不要（URL=商品単位）。
 
     戻り値: (state, detail)
     """
     try:
-        html = _render_html(url, wait_text="salesInfo", engine="firefox", block_resources=False)
+        from curl_cffi import requests as cffi_requests
     except ImportError:
-        return UNKNOWN, "Playwrightが未インストール（ヨドバシ監視には必要）"
+        return UNKNOWN, "curl_cffiが未インストール（pip install curl_cffi）"
+
+    try:
+        r = cffi_requests.get(url, impersonate="chrome", timeout=30)
+        html = r.text
     except Exception as e:
         return UNKNOWN, "ヨドバシページ取得失敗: {}".format(e)
 
