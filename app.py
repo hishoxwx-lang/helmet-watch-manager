@@ -507,6 +507,8 @@ def poizon():
 @login_required
 def poizon_listings_api():
     """POIZON出品一覧をJSONで返す（非同期API）"""
+    if not is_logged_in():
+        return jsonify({"error": "ログインが必要です"}), 401
     from poizon_api import get_active_listings
     config = load_config()
     result = get_active_listings(config)
