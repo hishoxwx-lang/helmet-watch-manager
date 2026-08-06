@@ -715,10 +715,15 @@ def fetch_variants_by_glm(url, glm_api_key):
             timeout=30,
         )
         if resp.status_code != 200:
-            return {"error": "GLM API エラー: HTTP {}".format(resp.status_code)}
+            return {"error": "GLM API エラー: HTTP {}（バリアント取得）".format(resp.status_code)}
 
         data = resp.json()
-        content = data["choices"][0]["message"]["content"].strip()
+        content = (data.get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
+
+        if not content:
+            finish = data.get("choices", [{}])[0].get("finish_reason", "")
+            usage = data.get("usage", {})
+            return {"error": "GLM応答が空（finish={}, tokens={}）".format(finish, usage)}
 
         # JSON部分を抽出（ネスト配列対応）
         # ```json ... ``` 形式の対応
@@ -754,7 +759,8 @@ def fetch_variants_by_glm(url, glm_api_key):
                 return {"error": "サイズ/カラー選択肢が見つかりませんでした"}
             return {"name": name, "sizes": sizes, "colors": colors}
 
-        return {"error": "GLM応答の解析に失敗: {}".format(content[:200])}
+        print("    [!] GLM応答解析失敗 [{0}文字]: {1}".format(len(content), content[:300]))
+        return {"error": "GLM応答の解析に失敗 [{0}文字]: {1}".format(len(content), content[:200])}
     except Exception as e:
         return {"error": "GLM API通信エラー: {}".format(e)}
 
