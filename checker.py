@@ -647,6 +647,103 @@ def check_generic(url, product, config):
     return UNKNOWN, "キーワードで判定できず（設定画面でGLM API Keyを追加するとAI判定が有効になります）"
 
 
+def fetch_variants_by_glm(url, glm_api_key):
+    """GLM API で商品ページからサイズ・カラー選択肢を抽出。
+
+    Yahoo!/楽天以外のサイト（ヨドバシ・On等）で使う。
+    HTMLを取得してGLMに投げ、選択肢一覧をJSONで返してもらう。
+
+    戻り値: {"name":..., "sizes":[...], "colors":[...]} または {"error":"..."}
+    """
+    try:
+        html = fetch_html_auto(url)
+    except Exception as e:
+        return {"error": "ページ取得失敗: {}".format(e)}
+
+    # HTMLから重要部分を抽出（サイズ選択 related）
+    important = []
+    # <title>
+    m = re.search(r"<title[^>]*>(.*?)</title>", html, re.S | re.I)
+    if m:
+        important.append("TITLE: " + m.group(1).strip()[:200])
+
+    # サイズ・カラー・バリエーション関連キーワード周辺
+    for kw in ("size", "サイズ", "variant", "color", "カラー", "色", "option", "select", "sku", "dropdown", "button-size"):
+        idx = html.lower().find(kw.lower())
+        if idx >= 0:
+            start = max(0, idx - 200)
+            end = min(len(html), idx + 500)
+            snippet = html[start:end]
+            important.append(snippet)
+            if len(" ".join(important)) > 4000:
+                break
+
+    excerpt = "\n".join(important[:10])[:4000]
+    if not excerpt.strip():
+        all_text = re.sub(r"<[^>]+>", " ", html)
+        all_text = re.sub(r"\s+", " ", all_text).strip()
+        excerpt = all_text[:4000]
+    if not excerpt.strip():
+        return {"error": "HTMLにテキストが見つかりません"}
+
+    prompt = (
+        "以下はECサイトの商品ページのHTML抜粋です。"
+        "この商品のサイズ選択肢とカラー選択肢を抽出してください。\n\n"
+        "HTML抜粋:\n{}\n\n"
+        "ルール:\n"
+        "- サイズ（size）: サイズ表記のリスト（例: S, M, L, XL, US7, 23cm 等）\n"
+        "- カラー（colors）: カラー/色のリスト（例: ブラック, ホワイト, レッド 等）\n"
+        "- 選択肢がない場合は空配列 [] を返す\n"
+        "- 商品名も抽出する\n\n"
+        "回答は以下のJSON形式のみ:\n"
+        '{{"name": "商品名", "sizes": ["サイズ1","サイズ2",...], "colors": ["カラー1","カラー2",...]}}'
+    ).format(excerpt)
+
+    try:
+        resp = requests.post(
+            "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
+            json={
+                "model": "glm-5.2",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.1,
+                "max_tokens": 500,
+            },
+            headers={
+                "Authorization": "Bearer {}".format(glm_api_key),
+                "Content-Type": "application/json",
+            },
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            return {"error": "GLM API エラー: HTTP {}".format(resp.status_code)}
+
+        data = resp.json()
+        content = data["choices"][0]["message"]["content"].strip()
+
+        # JSON部分を抽出
+        json_match = re.search(r'\{[^{}]*"sizes"[^{}]*\}', content, re.S)
+        if not json_match:
+            # より広いパターン
+            json_match = re.search(r'\{.*?\}', content, re.S)
+        if json_match:
+            result = json.loads(json_match.group())
+            name = result.get("name", "")
+            sizes = result.get("sizes", [])
+            colors = result.get("colors", [])
+            # 文字列でなければリスト化
+            if not isinstance(sizes, list):
+                sizes = []
+            if not isinstance(colors, list):
+                colors = []
+            if not sizes and not colors:
+                return {"error": "サイズ/カラー選択肢が見つかりませんでした"}
+            return {"name": name, "sizes": sizes, "colors": colors}
+
+        return {"error": "GLM応答の解析に失敗: {}".format(content[:100])}
+    except Exception as e:
+        return {"error": "GLM API通信エラー: {}".format(e)}
+
+
 def check_product(product, config=None):
     """
     戻り値: (state, detail)
