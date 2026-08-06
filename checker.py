@@ -705,7 +705,7 @@ def fetch_variants_fast(url, glm_api_key=""):
 
     # --- 2. 正規表現でカラー抽出 ---
     colors = []
-    color_match = re.search(r'カラー[：:]\s*(.+?)(?:<|/|$)', html, re.S | re.I)
+    color_match = re.search(r'カラー[：:]\s*(.+?)(?:<[^>]+>|</\w+>|\Z)', html, re.S | re.I)
     if color_match:
         raw = re.sub(r'<[^>]+>', '', color_match.group(1))
         colors = [c.strip() for c in re.split(r'[/／・、,]', raw) if c.strip() and 1 <= len(c.strip()) <= 20]
