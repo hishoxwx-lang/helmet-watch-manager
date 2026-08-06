@@ -651,11 +651,8 @@ def check_generic(url, product, config):
     return UNKNOWN, "キーワードで判定できず（設定画面でGLM API Keyを追加するとAI判定が有効になります）"
 
 
-def fetch_variants_by_glm(url, glm_api_key):
-    """GLM API で商品ページからサイズ・カラー選択肢を抽出。
-
-    Yahoo!/楽天以外のサイト（ヨドバシ・On等）で使う。
-    HTMLを取得してGLMに投げ、選択肢一覧をJSONで返してもらう。
+def fetch_variants_fast(url, glm_api_key=""):
+    """高速サイズ/カラー抽出。正規表現優先、ダメならGLMフォールバック。
 
     戻り値: {"name":..., "sizes":[...], "colors":[...]} または {"error":"..."}
     """
@@ -664,39 +661,78 @@ def fetch_variants_by_glm(url, glm_api_key):
     except Exception as e:
         return {"error": "ページ取得失敗: {}".format(e)}
 
-    # HTMLからサイズ関連部分を抽出（最大3000文字）
-    important = []
-    m = re.search(r"<title[^>]*>(.*?)</title>", html, re.S | re.I)
+    # --- 1. 正規表現でサイズ抽出（瞬時） ---
+    sizes = []
+
+    # パターン1: US数字（cm数字）
+    for m in re.finditer(r'US\s*(\d+(?:\.\d+)?)\s*[（(]\s*(\d+(?:\.\d+)?)\s*cm\s*[）)]', html):
+        label = "US{}({}cm)".format(m.group(1), m.group(2))
+        if label not in sizes:
+            sizes.append(label)
+
+    # パターン1b: US数字（カッコ内にcmなし）
+    if not sizes:
+        for m in re.finditer(r'US\s*(\d+(?:\.\d+)?)\s*[（(]([^)）]*?)[）)]', html):
+            label = "US{}({})".format(m.group(1), m.group(2))
+            if label not in sizes and len(label) < 30:
+                sizes.append(label)
+
+    # パターン2: 数字cm
+    if not sizes:
+        for m in re.finditer(r'(\d{2}(?:\.\d+)?)\s*cm', html):
+            label = "{}cm".format(m.group(1))
+            if label not in sizes:
+                sizes.append(label)
+
+    # パターン3: S/M/L/XL/XXL
+    if not sizes:
+        for m in re.finditer(r'\b(X{0,2}[SML])\b', html):
+            label = m.group(1)
+            if label not in sizes:
+                sizes.append(label)
+
+    # パターン4: サイズ：XX
+    if not sizes:
+        for m in re.finditer(r'サイズ[：:]\s*([^\s<<]+)', html):
+            sizes.append(m.group(1))
+
+    # パターン5: <option>タグ内
+    if not sizes:
+        for m in re.finditer(r'<option[^>]*>([^<]+)</option>', html, re.I):
+            text = m.group(1).strip()
+            if text and text not in ("選択してください", "サイズを選択", "---"):
+                sizes.append(text)
+
+    # --- 2. 正規表現でカラー抽出 ---
+    colors = []
+    color_match = re.search(r'カラー[：:]\s*(.+?)(?:<|/|$)', html, re.S | re.I)
+    if color_match:
+        raw = re.sub(r'<[^>]+>', '', color_match.group(1))
+        colors = [c.strip() for c in re.split(r'[/／・、,]', raw) if c.strip() and 1 <= len(c.strip()) <= 20]
+        colors = colors[:20]  # 上限
+
+    # 商品名
+    name = ""
+    m = re.search(r'<title[^>]*>(.*?)</title>', html, re.S | re.I)
     if m:
-        important.append(m.group(1).strip()[:100])
+        name = re.sub(r'\s*-\s*.*$', '', m.group(1).strip())[:100]
+        name = re.sub(r'\s*\|.*$', '', name)
 
-    seen_positions = set()
-    for kw in ("サイズ", "size", "variant", "カラー", "color", "option", "select", "sku"):
-        idx = html.lower().find(kw.lower())
-        if idx >= 0:
-            start = max(0, idx - 50)
-            if not any(abs(start - sp) < 100 for sp in seen_positions):
-                seen_positions.add(start)
-                # サイズ一覧全体を取り込むため広めに取得
-                end = min(len(html), idx + 800)
-                snippet = re.sub(r"<[^>]+>", " ", html[start:end])
-                snippet = re.sub(r"\s+", " ", snippet).strip()[:800]
-                important.append(snippet)
+    # --- 3. 正規表現で取れたら即返す ---
+    if sizes or colors:
+        print("    [バリアント] 正規表現で取得: sizes={0}, colors={1}".format(sizes[:5], colors[:5]))
+        return {"name": name, "sizes": sizes[:30], "colors": colors[:20]}
 
-    excerpt = " | ".join(important)[:3000]
-    if not excerpt.strip():
-        all_text = re.sub(r"<[^>]+>", " ", html)
-        all_text = re.sub(r"\s+", " ", all_text).strip()
-        excerpt = all_text[:3000]
-    if not excerpt.strip():
-        return {"error": "HTMLにテキストが見つかりません"}
+    # --- 4. 取れなければGLMフォールバック ---
+    if not glm_api_key:
+        return {"error": "サイズ/カラーが自動検出できませんでした（手入力でサイズを指定してください）"}
 
-    prompt = (
-        "以下のHTMLからサイズとカラーをJSONで抽出:\n{}\n"
-        '{{"name":"","sizes":[],"colors":[]}}'
-    ).format(excerpt)
+    # GLMには最小限のテキストだけ投げる
+    all_text = re.sub(r"<[^>]+>", " ", html)
+    all_text = re.sub(r"\s+", " ", all_text).strip()
+    excerpt = all_text[:1500]
 
-    print("    [GLMバリアント] excerpt={0}文字, prompt={1}文字".format(len(excerpt), len(prompt)))
+    prompt = 'HTMLからサイズとカラーをJSONで抽出(最大20件):\n{}\n{{"sizes":[],"colors":[]}}'.format(excerpt[:500])
 
     try:
         resp = requests.post(
@@ -714,24 +750,17 @@ def fetch_variants_by_glm(url, glm_api_key):
             timeout=30,
         )
         if resp.status_code != 200:
-            return {"error": "GLM API エラー: HTTP {}（バリアント取得）".format(resp.status_code)}
+            return {"error": "GLM API エラー: HTTP {}".format(resp.status_code)}
 
         data = resp.json()
         content = (data.get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
-
         if not content:
-            finish = data.get("choices", [{}])[0].get("finish_reason", "")
-            usage = data.get("usage", {})
-            return {"error": "GLM応答が空（finish={}, tokens={}）".format(finish, usage)}
+            return {"error": "GLM応答が空（サイズ抽出失敗）"}
 
-        # JSON部分を抽出（ネスト配列対応）
-        # ```json ... ``` 形式の対応
         json_match = re.search(r'```json\s*(\{.*?\})\s*```', content, re.S)
         if not json_match:
-            # 通常のJSON
             json_match = re.search(r'\{[^{}]*"sizes"[^{}]*\}', content, re.S)
         if not json_match:
-            # より広いパターン（配列含む）
             json_match = re.search(r'\{.*?"sizes".*?\}', content, re.S)
 
         if json_match:
@@ -739,29 +768,19 @@ def fetch_variants_by_glm(url, glm_api_key):
             try:
                 result = json.loads(raw_json)
             except json.JSONDecodeError:
-                # カンマやクォートの修正を試みる
-                try:
-                    cleaned = raw_json.replace("'", '"').replace("\n", "")
-                    result = json.loads(cleaned)
-                except Exception:
-                    print("    [!] GLM JSON解析失敗: {}".format(raw_json[:200]))
-                    return {"error": "GLM応答のJSON解析失敗: {}".format(raw_json[:100])}
-            name = result.get("name", "")
+                cleaned = raw_json.replace("'", '"').replace("\n", "")
+                result = json.loads(cleaned)
+
             sizes = result.get("sizes", [])
             colors = result.get("colors", [])
-            # 文字列でなければリスト化
-            if not isinstance(sizes, list):
-                sizes = []
-            if not isinstance(colors, list):
-                colors = []
+            if not isinstance(sizes, list): sizes = []
+            if not isinstance(colors, list): colors = []
             if not sizes and not colors:
-                return {"error": "サイズ/カラー選択肢が見つかりませんでした"}
-            print("    [GLMバリアント] 取得成功: sizes={0}, colors={1}".format(sizes, colors))
-            return {"name": name, "sizes": sizes, "colors": colors,
-                    "_debug_excerpt": excerpt[:300]}
+                return {"error": "サイズ/カラーが見つかりませんでした"}
+            print("    [バリアント] GLMで取得: sizes={0}, colors={1}".format(sizes[:5], colors[:5]))
+            return {"name": name or result.get("name", ""), "sizes": sizes[:30], "colors": colors[:20]}
 
-        print("    [!] GLM応答解析失敗 [{0}文字]: {1}".format(len(content), content[:300]))
-        return {"error": "GLM応答の解析に失敗 [{0}文字]: {1}".format(len(content), content[:200])}
+        return {"error": "GLM応答の解析に失敗: {}".format(content[:200])}
     except Exception as e:
         return {"error": "GLM API通信エラー: {}".format(e)}
 

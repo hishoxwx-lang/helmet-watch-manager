@@ -132,13 +132,11 @@ def fetch_variants(url):
         return fetch_rakuten_variants(url)
     if "yahoo.co.jp" in u:
         return fetch_yahoo_variants(url)
-    # その他のサイト: GLM API で選択肢を抽出
+    # その他のサイト: 高速サイズ/カラー抽出（正規表現優先・GLMフォールバック）
     config = load_json(CONFIG_FILE, {})
     glm_key = (config.get("glm_api_key") or "").strip()
-    if glm_key:
-        from checker import fetch_variants_by_glm
-        return fetch_variants_by_glm(url, glm_key)
-    return {"error": "選択肢取得は Yahoo!/楽天 で自動対応。その他のサイトはGLM API Key設定が必要です（⚙設定画面）"}
+    from checker import fetch_variants_fast
+    return fetch_variants_fast(url, glm_key)
 
 
 # ---------- routes ----------
