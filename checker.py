@@ -566,12 +566,12 @@ def check_by_glm(html, product, glm_api_key):
 
     try:
         resp = requests.post(
-            "https://api.z.ai/api/paas/v4/chat/completions",
+            "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
             json={
                 "model": "glm-5.2",
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.1,
-                "max_tokens": 200,
+                "max_tokens": 500,
             },
             headers={
                 "Authorization": "Bearer {}".format(glm_api_key),
