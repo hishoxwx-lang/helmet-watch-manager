@@ -388,6 +388,58 @@ def check_rakuten(url, size):
     return IN_STOCK, detail
 
 
+def check_yodobashi(html, stock_keyword=""):
+    """ヨドバシカメラ: div.salesInfo のテキストで在庫を判定。
+
+    ヨドバシはサーバーサイドレンダリングのHTMLで、div.salesInfo に
+    在庫状態（「在庫あり」「在庫切れ」「予定数の販売を終了しました」等）が
+    テキストとして含まれる。サイズ選択は不要（URL=商品単位）。
+
+    戻り値: (state, detail)
+    """
+    # div.salesInfo を正規表現で抽出（class名に salesInfo を含む div）
+    m = re.search(
+        r'<div[^>]*class="[^"]*salesInfo[^"]*"[^>]*>(.*?)</div>',
+        html, re.S | re.IGNORECASE,
+    )
+    if not m:
+        # フォールバック: id="salesInfo" 
+        m = re.search(
+            r'<div[^>]*id="[^"]*salesInfo[^"]*"[^>]*>(.*?)</div>',
+            html, re.S | re.IGNORECASE,
+        )
+    if not m:
+        return UNKNOWN, "salesInfo が見つかりません（ページ構造変更の可能性）"
+
+    raw = m.group(1)
+    # HTMLタグを除去してテキスト化
+    text = re.sub(r"<[^>]+>", " ", raw)
+    text = re.sub(r"\s+", " ", text).strip()
+
+    # 売切れキーワード（複数パターンに対応）
+    soldout_keywords = (
+        "予定数の販売を終了しました",
+        "在庫切れ",
+        "品切れ",
+        "入荷時期未定",
+        "販売終了",
+        "販売を終了しました",
+    )
+    for kw in soldout_keywords:
+        if kw in text:
+            return SOLD_OUT, text
+
+    # ユーザー指定の在庫キーワードがあれば、それが含まれていれば在庫あり
+    if stock_keyword and stock_keyword in text:
+        return IN_STOCK, text
+
+    # salesInfo があり、売切れキーワードがなければ在庫ありとみなす
+    if text:
+        return IN_STOCK, text
+
+    return UNKNOWN, "salesInfo のテキストが空です"
+
+
 def check_product(product):
     """
     戻り値: (state, detail)
@@ -408,12 +460,19 @@ def check_product(product):
         print("  [!] Fetch failed: {}".format(e))
         return UNKNOWN, "取得失敗: {}".format(e)
 
-    if not size_pattern:
-        return UNKNOWN, "サイズパターン未設定"
+    # ヨドバシカメラ: div.salesInfo のテキストで判定（サイズ不要）
+    if "yodobashi.com" in url:
+        return check_yodobashi(html, stock_keyword)
 
     # Yahoo!ショッピング: JSON の choiceName + stockText で判定
     if "yahoo.co.jp" in url:
+        if not size_pattern:
+            return UNKNOWN, "サイズパターン未設定"
         return check_yahoo(html, size_pattern)
+
+    # Webike等: <option> タグでサイズ別在庫判定
+    if not size_pattern:
+        return UNKNOWN, "サイズパターン未設定"
 
     # 指定サイズパターンを含む <option>...</option> を検索
     pat = re.compile(

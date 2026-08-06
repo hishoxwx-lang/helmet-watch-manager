@@ -116,6 +116,8 @@ def site_name_of(url):
         return "楽天市場"
     if "webike.net" in u:
         return "Webike"
+    if "yodobashi.com" in u:
+        return "ヨドバシ"
     if "amazon.co.jp" in u:
         return "Amazon"
     return "その他"
@@ -177,8 +179,10 @@ def index():
 def add():
     name = (request.form.get("name") or "").strip()
     url = (request.form.get("url") or "").strip()
-    size_pattern = (request.form.get("size_pattern") or "").strip() or "サイズ：L"
-    stock_keyword = (request.form.get("stock_keyword") or "").strip() or "在庫"
+    size_pattern = (request.form.get("size_pattern") or "").strip()
+    # ヨドバシ・Amazon等はサイズ不要だが、Webike等のoption方式サイトでは必須。
+    # 空欄の場合はチェック時にUNKNOWNになるが、エラーにはしない。
+    stock_keyword = (request.form.get("stock_keyword") or "").strip()
     poizon_sku_id = (request.form.get("poizon_sku_id") or "").strip()
     enabled = request.form.get("enabled") == "on"
 
@@ -242,8 +246,8 @@ def edit(pid):
             return render_template("edit.html", product=product)
         product["name"] = name
         product["url"] = url
-        product["size_pattern"] = (request.form.get("size_pattern") or "").strip() or "サイズ：L"
-        product["stock_keyword"] = (request.form.get("stock_keyword") or "").strip() or "在庫"
+        product["size_pattern"] = (request.form.get("size_pattern") or "").strip()
+        product["stock_keyword"] = (request.form.get("stock_keyword") or "").strip()
         product["poizon_sku_id"] = (request.form.get("poizon_sku_id") or "").strip()
         save_json(PRODUCTS_FILE, products)
         flash("商品を更新しました: {}".format(name), "success")
