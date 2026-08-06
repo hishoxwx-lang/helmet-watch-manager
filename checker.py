@@ -583,7 +583,11 @@ def check_by_glm(html, product, glm_api_key):
             return None, "GLM API エラー: HTTP {}".format(resp.status_code)
 
         data = resp.json()
-        content = data["choices"][0]["message"]["content"].strip()
+        content = (data.get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
+
+        if not content:
+            finish = data.get("choices", [{}])[0].get("finish_reason", "")
+            return None, "GLM応答が空（finish={}）".format(finish)
 
         # JSON部分を抽出（```json ... ``` で囲まれている場合も対応）
         json_match = re.search(r'\{[^}]*"state"[^}]*\}', content, re.S)
