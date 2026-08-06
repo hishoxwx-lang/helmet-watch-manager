@@ -568,7 +568,7 @@ def check_by_glm(html, product, glm_api_key):
         resp = requests.post(
             "https://api.z.ai/api/paas/v4/chat/completions",
             json={
-                "model": "glm-4-flash",
+                "model": "glm-4.5-air",
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.1,
                 "max_tokens": 200,
