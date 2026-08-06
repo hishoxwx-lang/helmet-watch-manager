@@ -651,8 +651,90 @@ def check_generic(url, product, config):
     return UNKNOWN, "キーワードで判定できず（設定画面でGLM API Keyを追加するとAI判定が有効になります）"
 
 
+def _yodobashi_variants(html):
+    """ヨドバシ専用: relatedSku から全バリエーション（サイズ・カラー）を抽出。
+
+    ヨドバシはサイズ/カラーごとに別URL（別SKU）になっており、
+    ページ内の JavaScript変数 relatedSku に全バリエーションのSKUが入っている。
+    それらのリンクテキストからサイズ・カラーを抽出する。
+
+    戻り値: {"name":..., "sizes":[...], "colors":...} または None
+    """
+    # relatedSku を取得
+    sku_m = re.search(r"var relatedSku\s*=\s*'([^']+)'", html)
+    if not sku_m:
+        return None
+    related_skus = set(sku_m.group(1).split(","))
+
+    # 現在の商品名からベース名を抽出
+    title_m = re.search(r"<title[^>]*>(.*?)</title>", html, re.S | re.I)
+    title = title_m.group(1).strip() if title_m else ""
+    # "ヨドバシ.com - " を削除、末尾の "通販..." を削除
+    name = re.sub(r"^ヨドバシ\.com\s*-\s*", "", title)
+    name = re.sub(r"\s*通販.*$", "", name).strip()
+    # 現在のサイズ・カラー部分を削除してベース名を作る
+    base_name = re.sub(r"\s+(?:US\d+|リリー|Ivory|Black|Glacier|ブラック|ホワイト).*", "", name)
+    base_name = re.sub(r"\s+\d+[A-Z]{2}\d+.*$", "", base_name).strip()
+
+    # relatedSkuに含まれるリンクのテキストからサイズ・カラーを抽出
+    sizes = []
+    colors = []
+    seen_sizes = set()
+    seen_colors = set()
+
+    for m in re.finditer(r'href="/product/(\d+)/"[^>]*>(.*?)</a>', html, re.S):
+        sku = m.group(1)
+        if sku not in related_skus:
+            continue
+        text = re.sub(r"<[^>]+>", " ", m.group(2))
+        text = re.sub(r"\s+", " ", text).strip()
+        if not text:
+            continue
+
+        # サイズを抽出（US数字（cm数字）形式）
+        size_m = re.search(r'(US\s*\d+(?:\.\d+)?)\s*[（(]\s*(\d+(?:\.\d+)?)\s*cm\s*[）)]', text)
+        if size_m:
+            size_label = "US{}({}cm)".format(size_m.group(1).replace("US", "").strip(),
+                                              size_m.group(2))
+            if size_label not in seen_sizes:
+                seen_sizes.add(size_label)
+                sizes.append(size_label)
+        else:
+            # US数字のみ
+            size_m2 = re.search(r'(US\s*\d+(?:\.\d+)?)', text)
+            if size_m2:
+                sl = size_m2.group(1).strip()
+                if sl not in seen_sizes:
+                    seen_sizes.add(sl)
+                    sizes.append(sl)
+
+        # カラーを抽出（スラッシュ区切り or 日本語）
+        # 商品名の一部から色を推定: "リリー/ライム" "Ivory/Peony" "Black/Ivory" 等
+        color_m = re.search(r'((?:[A-Za-z]+/[A-Za-z]+|[\u3040-\u309F\u30A0-\u30FF]+/[\u3040-\u309F\u30A0-\u30FF]+))', text)
+        if color_m:
+            color_label = color_m.group(1)
+            if color_label not in seen_colors:
+                seen_colors.add(color_label)
+                colors.append(color_label)
+
+    # サイズを番号順にソート
+    def _size_key(s):
+        m = re.search(r'(\d+(?:\.\d+)?)', s)
+        return float(m.group(1)) if m else 0
+    sizes.sort(key=_size_key)
+
+    if sizes or colors:
+        print("    [バリアント] ヨドバシ: sizes={0}, colors={1}".format(sizes[:5], colors[:5]))
+        return {"name": base_name, "sizes": sizes[:30], "colors": colors[:20]}
+
+    return None
+
+
 def fetch_variants_fast(url, glm_api_key=""):
-    """高速サイズ/カラー抽出。正規表現優先、ダメならGLMフォールバック。
+    """高速サイズ/カラー抽出。サイト別に最適化。
+
+    ヨドバシ: relatedSkuから全バリエーションを抽出
+    その他: 正規表現優先、ダメならGLMフォールバック
 
     戻り値: {"name":..., "sizes":[...], "colors":[...]} または {"error":"..."}
     """
@@ -661,7 +743,13 @@ def fetch_variants_fast(url, glm_api_key=""):
     except Exception as e:
         return {"error": "ページ取得失敗: {}".format(e)}
 
-    # --- 1. 正規表現でサイズ抽出（瞬時） ---
+    # --- ヨドバシ専用: relatedSku からバリエーション抽出 ---
+    if "yodobashi.com" in url:
+        result = _yodobashi_variants(html)
+        if result:
+            return result
+
+    # --- 正規表現でサイズ抽出（瞬時） ---
     sizes = []
 
     # パターン1: US数字（cm数字）
