@@ -188,3 +188,59 @@ def get_active_listings(config):
         return {"error": "POIZON API ID / KEY が未設定（⚙設定画面で入力）"}
 
     return query_listings(app_key, app_secret)
+
+
+def fetch_poizon_image(spu_id):
+    """POIZON商品ページ（poizon.com/product/{spuId}.html）から商品画像URLを取得。
+
+    apiId=51では画像が返らないため、商品ページの__NEXT_DATA__から抽出。
+    キャッシュ付き（同じspuIdは再取得しない）。
+
+    Returns:
+        str: 画像URL（取得失敗時は空文字）
+    """
+    import re as _re
+    cache_key = "_poizon_img_cache"
+    if not hasattr(fetch_poizon_image, cache_key):
+        setattr(fetch_poizon_image, cache_key, {})
+    cache = getattr(fetch_poizon_image, cache_key)
+    spu_str = str(spu_id)
+    if spu_str in cache:
+        return cache[spu_str]
+
+    url = "https://poizon.com/product/{}.html".format(spu_str)
+    try:
+        resp = requests.get(url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept-Language": "ja,en-US;q=0.9",
+        }, timeout=15)
+        html = resp.text
+
+        # __NEXT_DATA__ から cdn-img.poizon.com の画像URLを抽出
+        m = _re.search(
+            r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>',
+            html, _re.S,
+        )
+        if m:
+            # cdn-img.poizon.com/node-common/xxx-800-800.png を優先
+            imgs = _re.findall(
+                r'https://cdn-img\.poizon\.com/node-common/[a-f0-9-]+-\d+-\d+\.(?:jpg|jpeg|png|webp)',
+                m.group(1), _re.I,
+            )
+            if imgs:
+                cache[spu_str] = imgs[0]
+                return imgs[0]
+
+        # フォールバック: HTML全体から
+        imgs = _re.findall(
+            r'https://cdn-img\.poizon\.com/[^"\'\s]+\.(?:jpg|jpeg|png|webp)',
+            html, _re.I,
+        )
+        if imgs:
+            cache[spu_str] = imgs[0]
+            return imgs[0]
+    except Exception:
+        pass
+
+    cache[spu_str] = ""
+    return ""

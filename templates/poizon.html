@@ -204,6 +204,8 @@
 
       area.innerHTML = '<div class="row g-2">' + filtered.map(l => {
         const price = l.price ? Number(l.price).toLocaleString() + ' ' + (l.currency || '') : '';
+        const title = l.title || '';
+        const colorSize = [l.color, l.size].filter(x => x).join(' / ');
         const badges = [];
         if (l.linked) {
           badges.push('<span class="badge badge-linked">🔗 紐付け済</span>');
@@ -216,24 +218,30 @@
 
         const linkBtn = l.linked
           ? '<button class="btn btn-sm btn-outline-primary" onclick="openLinkModal(\'' + l.skuId + '\',\'' + l.sellerBiddingNo + '\',\'' + escapeQuotes(l.source_name) + '\',\'' + escapeQuotes(l.source_url) + '\',' + (l.monitoring ? 'true' : 'false') + ')">編集</button>'
-          : '<button class="btn btn-sm btn-success" onclick="openLinkModal(\'' + l.skuId + '\',\'' + l.sellerBiddingNo + '\',\'\',\'\',true)">🔗 紐付け</button>';
+          : '<button class="btn btn-sm btn-success" onclick="openLinkModal(\'' + l.skuId + '\',\'' + l.sellerBiddingNo + '\',\'' + escapeQuotes(title) + '\',\'\',true)">🔗 紐付け</button>';
+
+        const img = l.image_url
+          ? '<img src="' + escapeHtml(l.image_url) + '" alt="" loading="lazy" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:8px;margin-bottom:.5rem;">'
+          : '<div class="bg-light rounded d-flex align-items-center justify-content-center" style="width:100%;aspect-ratio:1;margin-bottom:.5rem;"><span class="text-muted">📷</span></div>';
 
         return `
           <div class="col-md-6 col-lg-4">
             <div class="card listing-card h-100">
               <div class="card-body">
-                <div class="d-flex justify-content-between align-items-start mb-2">
-                  <div>
-                    <div class="sku-id">SKU: ${l.skuId}</div>
+                ${img}
+                <div class="d-flex justify-content-between align-items-start mb-1">
+                  <div class="flex-grow-1 me-2">
+                    <div class="fw-bold text-truncate" title="${escapeHtml(title)}">${escapeHtml(title) || '(商品名無し)'}</div>
+                    ${colorSize ? '<div class="small text-muted">' + escapeHtml(colorSize) + '</div>' : ''}
+                  </div>
+                  <div class="text-end text-nowrap">
                     <div class="price">${price}</div>
                   </div>
-                  <div class="text-end">
-                    <div class="d-flex gap-1 flex-wrap justify-content-end">${badges.join('')}</div>
-                  </div>
                 </div>
-                ${l.source_name ? '<div class="small text-muted mb-1">' + escapeHtml(l.source_name) + '</div>' : ''}
-                ${l.source_url ? '<a href="' + escapeHtml(l.source_url) + '" target="_blank" class="small text-truncate d-block">仕入先 ↗</a>' : ''}
-                <div class="mt-2">${linkBtn}</div>
+                <div class="sku-id mb-1">SKU: ${l.skuId}</div>
+                <div class="d-flex gap-1 flex-wrap mb-2">${badges.join('')}</div>
+                ${l.source_url ? '<a href="' + escapeHtml(l.source_url) + '" target="_blank" class="small text-truncate d-block mb-1">仕入先 ↗</a>' : ''}
+                ${linkBtn}
               </div>
             </div>
           </div>`;

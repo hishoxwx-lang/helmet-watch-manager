@@ -514,21 +514,52 @@ def poizon_listings_api():
     if isinstance(result, dict) and "error" in result:
         return jsonify(result), 200  # エラーも200で返す（JS側で表示）
 
-    # 紐付け情報を付与
+    # 紐付け情報 + 商品情報を付与
+    from poizon_api import fetch_poizon_image
     links = load_poizon_links()
     enriched = []
     for item in result:
         sku_id = str(item.get("skuId", ""))
+        spu_id = item.get("spuId", "")
         link_info = links.get(sku_id, {})
+
+        # 商品名（spuTitle）
+        spu_title = item.get("spuTitle", "")
+
+        # カラー・サイズ（skuSaleProp または regionSalePvInfoList）
+        color = ""
+        size = ""
+        sku_prop_str = item.get("skuSaleProp", "[]")
+        try:
+            sku_props = json.loads(sku_prop_str) if isinstance(sku_prop_str, str) else sku_prop_str
+            for p in sku_props:
+                if p.get("name", "").lower() in ("color", "カラー", "色"):
+                    color = p.get("value", "")
+                elif p.get("name", "").lower() in ("size", "サイズ"):
+                    size = p.get("value", "")
+        except Exception:
+            pass
+        # フォールバック: regionSalePvInfoList
+        if not color or not size:
+            for info in item.get("regionSalePvInfoList", []):
+                if info.get("name") in ("カラー", "Color", "色") and not color:
+                    color = info.get("localValue", "")
+                elif info.get("name") in ("サイズ", "Size") and not size:
+                    size = info.get("localValue", "")
+
         enriched.append({
             "sellerBiddingNo": item.get("sellerBiddingNo", ""),
             "skuId": sku_id,
-            "spuId": item.get("spuId", ""),
+            "spuId": spu_id,
+            "title": spu_title,
             "price": item.get("price", 0),
             "currency": item.get("currency", ""),
+            "color": color,
+            "size": size,
             "tradeStatus": item.get("tradeStatus", 0),
             "tradeSubStatus": item.get("tradeSubStatus", 0),
             "quantity": item.get("quantity", 0),
+            "image_url": fetch_poizon_image(spu_id) if spu_id else "",
             "source_url": link_info.get("url", ""),
             "source_name": link_info.get("name", ""),
             "linked": bool(link_info.get("url")),
