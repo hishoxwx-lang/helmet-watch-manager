@@ -664,7 +664,7 @@ def fetch_variants_by_glm(url, glm_api_key):
     except Exception as e:
         return {"error": "ページ取得失敗: {}".format(e)}
 
-    # HTMLからサイズ関連部分を最小限に抽出（トークン節約・最大1500文字）
+    # HTMLからサイズ関連部分を抽出（最大3000文字）
     important = []
     m = re.search(r"<title[^>]*>(.*?)</title>", html, re.S | re.I)
     if m:
@@ -677,16 +677,17 @@ def fetch_variants_by_glm(url, glm_api_key):
             start = max(0, idx - 50)
             if not any(abs(start - sp) < 100 for sp in seen_positions):
                 seen_positions.add(start)
-                end = min(len(html), idx + 200)
+                # サイズ一覧全体を取り込むため広めに取得
+                end = min(len(html), idx + 800)
                 snippet = re.sub(r"<[^>]+>", " ", html[start:end])
-                snippet = re.sub(r"\s+", " ", snippet).strip()[:200]
+                snippet = re.sub(r"\s+", " ", snippet).strip()[:800]
                 important.append(snippet)
 
-    excerpt = " | ".join(important)[:1500]
+    excerpt = " | ".join(important)[:3000]
     if not excerpt.strip():
         all_text = re.sub(r"<[^>]+>", " ", html)
         all_text = re.sub(r"\s+", " ", all_text).strip()
-        excerpt = all_text[:1500]
+        excerpt = all_text[:3000]
     if not excerpt.strip():
         return {"error": "HTMLにテキストが見つかりません"}
 
