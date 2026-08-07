@@ -28,6 +28,9 @@ LISTING_LIST_PATH = "/dop/api/v1/pop/api/v1/retrieve-bid/general-type-bidding-li
 # apiId=26: Cancel Listing
 CANCEL_PATH = "/dop/api/v1/pop/api/v1/cancel-bid/cancel-bidding"
 
+# apiId=44: Update Listing Price (通常出品)
+UPDATE_BID_PATH = "/dop/api/v1/pop/api/v1/update-bid/normal-autonomous-bidding"
+
 
 # ==================== 署名 ====================
 
@@ -198,11 +201,8 @@ def get_active_listings(config):
 def fetch_market_prices_batch(sku_ids, app_key, app_secret, bidding_type=20):
     """複数SKUの市場価格をバッチ取得（最大20件/1リクエスト）。
 
-    apiId別のbatchPriceエンドポイントを使用。
-    asiaMinPrice / globalMinPrice / leakInfos(JP価格) を取得。
-
     Returns:
-        dict: {"skuId": {"min_price": int, "global_min": int, "jp_price": int}}
+        dict: {"skuId": {"min_price": int, "cart_price": int, "global_min": int, "jp_price": int}}
     """
     if not sku_ids or not app_key or not app_secret:
         return {}
@@ -240,6 +240,7 @@ def fetch_market_prices_batch(sku_ids, app_key, app_secret, bidding_type=20):
                         continue
                     asia_min = item.get("asiaMinPrice") or item.get("localMinPrice") or 0
                     global_min = item.get("globalMinPrice") or 0
+                    cart_price = item.get("effectiveExposurePrice") or 0
                     jp_price = 0
                     for li in item.get("leakInfos", []):
                         if li.get("buyerRegion") == "JP":
@@ -247,6 +248,7 @@ def fetch_market_prices_batch(sku_ids, app_key, app_secret, bidding_type=20):
                             break
                     results[sku] = {
                         "min_price": asia_min,
+                        "cart_price": cart_price,
                         "global_min": global_min,
                         "jp_price": jp_price,
                     }
@@ -254,6 +256,33 @@ def fetch_market_prices_batch(sku_ids, app_key, app_secret, bidding_type=20):
             pass
 
     return results
+
+
+def update_listing_price(app_key, app_secret, seller_bidding_no, global_sku_id, new_price):
+    """apiId=44: 出品の価格を変更（通常出品=normal-autonomous-bidding）。
+
+    Args:
+        seller_bidding_no: 出品ID
+        global_sku_id: グローバルSKU ID
+        new_price: 新価格（JPYは円単位）
+
+    Returns:
+        dict: {"ok": True} または {"error": "..."}
+    """
+    import uuid as _uuid
+    client = PoizonClient(app_key, app_secret)
+    data = client.post(UPDATE_BID_PATH, {
+        "sellerBiddingNo": seller_bidding_no,
+        "globalSkuId": global_sku_id,
+        "price": new_price,
+        "currency": "JPY",
+        "countryCode": "JP",
+        "deliveryCountryCode": "JP",
+        "requestId": str(_uuid.uuid4()),
+    })
+    if "error" in data:
+        return data
+    return {"ok": True, "raw": data}
 
 
 def fetch_poizon_image(spu_id, color="", sku_id=0, app_key="", app_secret=""):

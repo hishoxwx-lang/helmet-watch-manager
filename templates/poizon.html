@@ -202,6 +202,10 @@
   .col-action{width:90px;text-align:right;white-space:nowrap}
   .col-stock{width:100px}
   .col-market{width:90px;text-align:right}
+  .col-cart{width:90px;text-align:right}
+  .price-editable{cursor:pointer;border-bottom:1px dashed var(--text-muted)}
+  .price-editable:hover{color:var(--accent);border-color:var(--accent)}
+  .price-input{width:80px;padding:2px 4px;border:1px solid var(--accent);border-radius:3px;font-size:12px;font-weight:600;text-align:right;font-variant-numeric:tabular-nums}
   .market-price{font-size:11px;font-weight:600;font-variant-numeric:tabular-nums}
   .market-cheap{color:var(--danger)}
   .market-ok{color:var(--success)}
@@ -629,7 +633,8 @@
             (sourceLink ? '<div style="margin-top:2px">' + sourceLink + '</div>' : '') +
           '</div></td>' +
           '<td class="col-sku"><span class="sku-code">' + escapeHtml(l.skuId) + '</span></td>' +
-          '<td class="col-price"><div class="price-cell">' + escapeHtml(price) + '<span class="currency">' + escapeHtml(currency) + '</span></div></td>' +
+          '<td class="col-price"><div class="price-cell"><span class="price-editable" onclick="editPrice(this,\\\'' + l.sellerBiddingNo + '\\\',\\\'' + l.globalSkuId + '\\\',' + l.price + ')">' + escapeHtml(price) + '</span><span class="currency">' + escapeHtml(currency) + '</span></div></td>' +
+          '<td class="col-cart"><div class="price-cell">' + (l.cart_price ? '¥' + Number(l.cart_price).toLocaleString() : '<span class="text-faint">—</span>') + '</div></td>' +
           marketCell +
           stockCell +
           '<td class="col-status">' + statusBadges + '</td>' +
@@ -645,6 +650,7 @@
           '<th class="col-name">商品名</th>' +
           '<th class="col-sku">SKU</th>' +
           '<th class="col-price" style="text-align:right">価格</th>' +
+          '<th class="col-cart" style="text-align:right">カート価格</th>' +
           '<th class="col-market" style="text-align:right">市場最低値</th>' +
           '<th class="col-stock">仕入先在庫</th>' +
           '<th class="col-status">紐付け</th>' +
@@ -690,6 +696,56 @@
       activeBrand = brand;
       renderBrandTabs();
       renderListings();
+    }
+
+    function editPrice(span, biddingNo, globalSkuId, currentPrice) {
+      const td = span.parentElement;
+      const input = document.createElement('input');
+      input.type = 'number';
+      input.value = currentPrice;
+      input.className = 'price-input';
+      td.innerHTML = '';
+      td.appendChild(input);
+      input.focus();
+      input.select();
+
+      async function save() {
+        const newPrice = parseInt(input.value);
+        if (!newPrice || newPrice === currentPrice) {
+          td.innerHTML = '<span class="price-editable" onclick="editPrice(this,\'' + biddingNo + '\',\'' + globalSkuId + '\',' + currentPrice + ')">¥' + Number(currentPrice).toLocaleString() + '</span><span class="currency">JPY</span>';
+          return;
+        }
+        td.innerHTML = '<span class="text-muted">更新中...</span>';
+        const fd = new FormData();
+        fd.append('seller_bidding_no', biddingNo);
+        fd.append('global_sku_id', globalSkuId);
+        fd.append('price', newPrice);
+        try {
+          const resp = await fetch('{{ url_for("poizon_update_price_api") }}', {method:'POST', body:fd});
+          const ct = resp.headers.get('content-type') || '';
+          if (!ct.includes('application/json')) {
+            throw new Error('ログイン期限切れ');
+          }
+          const data = await resp.json();
+          if (data.ok) {
+            td.innerHTML = '<span class="price-editable" style="color:var(--success)" onclick="editPrice(this,\'' + biddingNo + '\',\'' + globalSkuId + '\',' + newPrice + ')">¥' + Number(newPrice).toLocaleString() + '</span><span class="currency">JPY</span>';
+          } else {
+            alert('エラー: ' + (data.error || '不明'));
+            td.innerHTML = '<span class="price-editable" onclick="editPrice(this,\'' + biddingNo + '\',\'' + globalSkuId + '\',' + currentPrice + ')">¥' + Number(currentPrice).toLocaleString() + '</span><span class="currency">JPY</span>';
+          }
+        } catch(e) {
+          alert('通信エラー: ' + e);
+          td.innerHTML = '<span class="price-editable" onclick="editPrice(this,\'' + biddingNo + '\',\'' + globalSkuId + '\',' + currentPrice + ')">¥' + Number(currentPrice).toLocaleString() + '</span><span class="currency">JPY</span>';
+        }
+      }
+
+      input.addEventListener('blur', save);
+      input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') input.blur();
+        if (e.key === 'Escape') {
+          td.innerHTML = '<span class="price-editable" onclick="editPrice(this,\'' + biddingNo + '\',\'' + globalSkuId + '\',' + currentPrice + ')">¥' + Number(currentPrice).toLocaleString() + '</span><span class="currency">JPY</span>';
+        }
+      });
     }
 
     function filterListings() {

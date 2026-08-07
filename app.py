@@ -578,8 +578,10 @@ def poizon_listings_api():
             "image_url": image_map.get(sku_id, ""),
             # 市場価格
             "market_min": price_map.get(sku_id, {}).get("min_price", 0),
+            "cart_price": price_map.get(sku_id, {}).get("cart_price", 0),
             "market_global_min": price_map.get(sku_id, {}).get("global_min", 0),
             "market_jp": price_map.get(sku_id, {}).get("jp_price", 0),
+            "global_sku_id": item.get("globalSkuId", 0),
             "source_url": link_info.get("url", ""),
             "source_name": link_info.get("name", ""),
             "linked": bool(link_info.get("url")),
@@ -603,10 +605,43 @@ def poizon_listings_api():
     return jsonify({"listings": enriched})
 
 
+@app.route("/api/poizon/update_price", methods=["POST"])
+@login_required
+def poizon_update_price_api():
+    """POIZON出品の価格を変更（apiId=44）"""
+    if not is_logged_in():
+        return jsonify({"error": "ログインが必要です"}), 401
+
+    seller_bidding_no = (request.form.get("seller_bidding_no") or "").strip()
+    global_sku_id = (request.form.get("global_sku_id") or "").strip()
+    new_price = (request.form.get("price") or "").strip()
+
+    if not seller_bidding_no or not global_sku_id or not new_price:
+        return jsonify({"error": "パラメータ不足"}), 400
+
+    try:
+        new_price = int(new_price)
+    except ValueError:
+        return jsonify({"error": "価格は数値で入力"}), 400
+
+    if new_price < 1:
+        return jsonify({"error": "価格は1円以上"}), 400
+
+    config = load_config()
+    app_key = (config.get("poizon_api_id") or "").strip()
+    app_secret = (config.get("poizon_api_key") or "").strip()
+
+    if not app_key or not app_secret:
+        return jsonify({"error": "POIZON API設定が未設定"}), 400
+
+    from poizon_api import update_listing_price
+    result = update_listing_price(app_key, app_secret, seller_bidding_no, int(global_sku_id), new_price)
+    return jsonify(result)
+
+
 @app.route("/api/poizon/link", methods=["POST"])
 @login_required
 def poizon_link_api():
-    """POIZON出品に仕入元URLを紐付ける / 監視ON-OFF"""
     sku_id = (request.form.get("sku_id") or "").strip()
     url = (request.form.get("url") or "").strip()
     name = (request.form.get("name") or "").strip()
