@@ -201,6 +201,10 @@
   .col-status{width:100px}
   .col-action{width:90px;text-align:right;white-space:nowrap}
   .col-stock{width:100px}
+  .col-market{width:90px;text-align:right}
+  .market-price{font-size:11px;font-weight:600;font-variant-numeric:tabular-nums}
+  .market-cheap{color:var(--danger)}
+  .market-ok{color:var(--success)}
   .brand-tabs{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:12px}
   .brand-tab{padding:5px 12px;border-radius:var(--radius);border:1px solid var(--border);background:var(--surface);font-size:12px;cursor:pointer;color:var(--text-muted);font-weight:500;white-space:nowrap;transition:background .12s,color .12s}
   .brand-tab:hover{background:var(--surface-3);color:var(--text)}
@@ -566,6 +570,22 @@
             '<span class="thumb-placeholder" style="display:none">' + titleChar + '</span>'
           : '<span class="thumb-placeholder">' + titleChar + '</span>';
 
+        {# 市場価格セル #}
+        const myPrice = l.price || 0;
+        const marketMin = l.market_min || 0;
+        const marketJP = l.market_jp || 0;
+        let marketCell;
+        if (marketMin > 0) {
+          let priceClass = 'market-ok';
+          let arrow = '';
+          if (myPrice > marketMin) { priceClass = 'market-cheap'; arrow = '▼ '; }
+          else if (myPrice < marketMin) { priceClass = 'market-ok'; arrow = '▲ '; }
+          const displayPrice = marketJP > 0 ? marketJP : marketMin;
+          marketCell = '<td class="col-market"><span class="market-price ' + priceClass + '">' + arrow + '¥' + Number(displayPrice).toLocaleString() + '</span></td>';
+        } else {
+          marketCell = '<td class="col-market"><span class="text-faint">—</span></td>';
+        }
+
         {# 在庫状態セル #}
         let stockCell;
         if (l.stock_state === 'IN_STOCK') {
@@ -610,6 +630,7 @@
           '</div></td>' +
           '<td class="col-sku"><span class="sku-code">' + escapeHtml(l.skuId) + '</span></td>' +
           '<td class="col-price"><div class="price-cell">' + escapeHtml(price) + '<span class="currency">' + escapeHtml(currency) + '</span></div></td>' +
+          marketCell +
           stockCell +
           '<td class="col-status">' + statusBadges + '</td>' +
           '<td class="col-action">' + linkBtn + '</td>' +
@@ -624,6 +645,7 @@
           '<th class="col-name">商品名</th>' +
           '<th class="col-sku">SKU</th>' +
           '<th class="col-price" style="text-align:right">価格</th>' +
+          '<th class="col-market" style="text-align:right">市場最低値</th>' +
           '<th class="col-stock">仕入先在庫</th>' +
           '<th class="col-status">紐付け</th>' +
           '<th class="col-action" style="text-align:right">アクション</th>' +

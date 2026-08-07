@@ -195,6 +195,67 @@ def get_active_listings(config):
     return query_listings(app_key, app_secret)
 
 
+def fetch_market_prices_batch(sku_ids, app_key, app_secret, bidding_type=20):
+    """複数SKUの市場価格をバッチ取得（最大20件/1リクエスト）。
+
+    apiId別のbatchPriceエンドポイントを使用。
+    asiaMinPrice / globalMinPrice / leakInfos(JP価格) を取得。
+
+    Returns:
+        dict: {"skuId": {"min_price": int, "global_min": int, "jp_price": int}}
+    """
+    if not sku_ids or not app_key or not app_secret:
+        return {}
+
+    results = {}
+    for i in range(0, len(sku_ids), 20):
+        batch = [int(sid) for sid in sku_ids[i:i+20] if sid]
+        if not batch:
+            continue
+
+        params = {
+            "app_key": app_key,
+            "timestamp": _now_timestamp_ms(),
+            "language": "ja",
+            "timeZone": "Asia/Tokyo",
+            "skuIds": batch,
+            "biddingType": bidding_type,
+            "region": "JP",
+            "currency": "JPY",
+        }
+        params["sign"] = _calculate_sign(params, app_secret)
+
+        try:
+            resp = requests.post(
+                BASE_URL + "/dop/api/v1/pop/api/v1/recommend-bid/batchPrice",
+                json=params,
+                headers={"Content-Type": "application/json"},
+                timeout=15,
+            )
+            data = resp.json()
+            if data.get("data") and isinstance(data["data"], list):
+                for item in data["data"]:
+                    sku = str(item.get("skuId", ""))
+                    if not sku:
+                        continue
+                    asia_min = item.get("asiaMinPrice") or item.get("localMinPrice") or 0
+                    global_min = item.get("globalMinPrice") or 0
+                    jp_price = 0
+                    for li in item.get("leakInfos", []):
+                        if li.get("buyerRegion") == "JP":
+                            jp_price = li.get("leakPrice") or 0
+                            break
+                    results[sku] = {
+                        "min_price": asia_min,
+                        "global_min": global_min,
+                        "jp_price": jp_price,
+                    }
+        except Exception:
+            pass
+
+    return results
+
+
 def fetch_poizon_image(spu_id, color="", sku_id=0, app_key="", app_secret=""):
     """POIZON API（by-sku）で商品画像を取得（1件）。
 

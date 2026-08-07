@@ -529,6 +529,10 @@ def poizon_listings_api():
     app_secret = config.get("poizon_api_key", "")
     image_map = fetch_poizon_images_batch(all_sku_ids, app_key, app_secret) if all_sku_ids else {}
 
+    # 市場価格をバッチ取得
+    from poizon_api import fetch_market_prices_batch
+    price_map = fetch_market_prices_batch(all_sku_ids, app_key, app_secret) if all_sku_ids else {}
+
     enriched = []
     for item in result:
         sku_id = str(item.get("skuId", ""))
@@ -572,6 +576,10 @@ def poizon_listings_api():
             "tradeSubStatus": item.get("tradeSubStatus", 0),
             "quantity": item.get("quantity", 0),
             "image_url": image_map.get(sku_id, ""),
+            # 市場価格
+            "market_min": price_map.get(sku_id, {}).get("min_price", 0),
+            "market_global_min": price_map.get(sku_id, {}).get("global_min", 0),
+            "market_jp": price_map.get(sku_id, {}).get("jp_price", 0),
             "source_url": link_info.get("url", ""),
             "source_name": link_info.get("name", ""),
             "linked": bool(link_info.get("url")),
