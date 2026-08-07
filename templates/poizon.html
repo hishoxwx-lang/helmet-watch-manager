@@ -341,6 +341,7 @@
       <span>POIZON出品管理</span>
     </div>
     <div class="header-right">
+      <button class="btn btn-outline btn-sm" onclick="updateVersion(this)">🔄 最新版に更新</button>
       <button class="btn btn-primary btn-sm" onclick="runCheck(this)">▶ 今すぐチェック</button>
       <a href="{{ url_for('settings') }}" class="btn btn-outline btn-sm">⚙ 設定</a>
       <a href="{{ url_for('logout') }}" class="btn btn-outline btn-sm">ログアウト</a>
@@ -699,7 +700,6 @@
       btn.textContent = 'チェック中...';
       try {
         const resp = await fetch('{{ url_for("run") }}', {redirect: 'follow'});
-        // 結果に関わらず出品一覧を再読み込み
         loadListings();
         btn.textContent = '✓ チェック完了';
         setTimeout(() => { btn.textContent = '▶ 今すぐチェック'; btn.disabled = false; }, 2000);
@@ -708,6 +708,22 @@
         btn.disabled = false;
         loadListings();
       }
+    }
+
+    function updateVersion(btn) {
+      if (!confirm('最新版に更新します。数秒後に再起動します。よろしいですか？')) return;
+      btn.disabled = true;
+      btn.textContent = '更新中...';
+      fetch('{{ url_for("update") }}', {method: 'POST'})
+        .then(() => {
+          btn.textContent = '✓ 再起動中...';
+          setTimeout(() => { location.reload(); }, 3000);
+        })
+        .catch(() => {
+          // リダイレクト等でエラーになるが問題ない
+          btn.textContent = '✓ 再起動中...';
+          setTimeout(() => { location.reload(); }, 3000);
+        });
     }
   </script>
 </body>
