@@ -486,7 +486,7 @@ def poizon_listings_api():
         return jsonify(result), 200  # エラーも200で返す（JS側で表示）
 
     # 紐付け情報 + 商品情報 + 在庫状態を付与
-    from poizon_api import fetch_poizon_image
+    from poizon_api import fetch_poizon_images_batch
     links = load_poizon_links()
     state = load_state()
     products = load_products()
@@ -496,6 +496,12 @@ def poizon_listings_api():
         sid = str(p.get("poizon_sku_id", ""))
         if sid:
             sku_to_product[sid] = p
+
+    # 全SKU画像をバッチ取得（20件×Nリクエスト・旧: 100件×100リクエスト）
+    all_sku_ids = [item.get("skuId", 0) for item in result if item.get("skuId")]
+    app_key = config.get("poizon_api_id", "")
+    app_secret = config.get("poizon_api_key", "")
+    image_map = fetch_poizon_images_batch(all_sku_ids, app_key, app_secret) if all_sku_ids else {}
 
     enriched = []
     for item in result:
@@ -539,12 +545,7 @@ def poizon_listings_api():
             "tradeStatus": item.get("tradeStatus", 0),
             "tradeSubStatus": item.get("tradeSubStatus", 0),
             "quantity": item.get("quantity", 0),
-            "image_url": fetch_poizon_image(
-                spu_id, color,
-                sku_id=item.get("skuId", 0),
-                app_key=config.get("poizon_api_id", ""),
-                app_secret=config.get("poizon_api_key", ""),
-            ) if spu_id else "",
+            "image_url": image_map.get(sku_id, ""),
             "source_url": link_info.get("url", ""),
             "source_name": link_info.get("name", ""),
             "linked": bool(link_info.get("url")),

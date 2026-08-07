@@ -196,55 +196,70 @@ def get_active_listings(config):
 
 
 def fetch_poizon_image(spu_id, color="", sku_id=0, app_key="", app_secret=""):
-    """POIZON API（by-sku）で商品画像を取得。
+    """POIZON API（by-sku）で商品画像を取得（1件）。
 
-    apiId=140 の by-sku エンドポイントを使い、spuInfo.logoUrl から画像URLを取得。
-    skuIdが分かれば個別に取得できる。
-
-    Returns:
-        str: 画像URL（取得失敗時は空文字）
+    バッチ取得を使う場合は fetch_poizon_images_batch を推奨。
     """
     if not sku_id or not app_key or not app_secret:
         return ""
+    imgs = fetch_poizon_images_batch([sku_id], app_key, app_secret)
+    return imgs.get(str(sku_id), "")
 
-    import hashlib as _hashlib
-    import time as _time
-    import json as _json
 
-    params = {
-        "app_key": app_key,
-        "timestamp": int(_time.time() * 1000),
-        "language": "ja",
-        "timeZone": "Asia/Tokyo",
-        "skuIds": [int(sku_id)],
-        "region": "JP",
-    }
+def fetch_poizon_images_batch(sku_ids, app_key, app_secret):
+    """複数SKUの画像をバッチ取得（最大20件/1リクエスト）。
 
-    # 署名
-    sign_str = "&".join(
-        "{}={}".format(quote_plus(str(k)), quote_plus(_normalize_value(params[k])))
-        for k in sorted(params.keys())
-        if params[k] is not None and not (isinstance(params[k], str) and params[k] == "")
-    ) + app_secret
-    params["sign"] = _hashlib.md5(sign_str.encode("utf-8")).hexdigest().upper()
+    apiId=140 の by-sku エンドポイントにskuIdsリストを渡して
+    一括取得。100件の場合は5リクエストで完了（旧: 100リクエスト）。
 
-    try:
-        resp = requests.post(
-            BASE_URL + "/dop/api/v1/pop/api/v1/intl-commodity/intl/sku/sku-basic-info/by-sku",
-            json=params,
-            headers={"Content-Type": "application/json"},
-            timeout=15,
-        )
-        data = resp.json()
-        if data.get("data") and isinstance(data["data"], list):
-            for item in data["data"]:
-                spu_info = item.get("spuInfo", {})
-                logo_url = spu_info.get("logoUrl", "")
-                if logo_url:
-                    return logo_url
-    except Exception:
-        pass
+    Returns:
+        dict: {"skuId": "画像URL", ...}
+    """
+    if not sku_ids or not app_key or not app_secret:
+        return {}
 
-    return ""
+    results = {}
+    # 20件ずつバッチ
+    for i in range(0, len(sku_ids), 20):
+        batch = [int(sid) for sid in sku_ids[i:i+20] if sid]
+        if not batch:
+            continue
+
+        params = {
+            "app_key": app_key,
+            "timestamp": _now_timestamp_ms(),
+            "language": "ja",
+            "timeZone": "Asia/Tokyo",
+            "skuIds": batch,
+            "region": "JP",
+        }
+        params["sign"] = _calculate_sign(params, app_secret)
+
+        try:
+            resp = requests.post(
+                BASE_URL + "/dop/api/v1/pop/api/v1/intl-commodity/intl/sku/sku-basic-info/by-sku",
+                json=params,
+                headers={"Content-Type": "application/json"},
+                timeout=15,
+            )
+            data = resp.json()
+            if data.get("data") and isinstance(data["data"], list):
+                for item in data["data"]:
+                    spu_info = item.get("spuInfo", {})
+                    logo_url = spu_info.get("logoUrl", "")
+                    # skuInfoListから各SKUのIDを取得
+                    for sku in item.get("skuInfoList", []):
+                        sid = str(sku.get("skuId") or sku.get("dwSkuId") or "")
+                        if sid and logo_url:
+                            results[sid] = logo_url
+                    # フォールバック: item直下のskuId
+                    if not results:
+                        sid = str(item.get("skuId", ""))
+                        if sid and logo_url:
+                            results[sid] = logo_url
+        except Exception:
+            pass
+
+    return results
 
 
