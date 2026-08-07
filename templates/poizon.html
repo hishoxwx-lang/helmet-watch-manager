@@ -536,11 +536,12 @@
         const title = l.title || '(商品名無し)';
         const colorSize = [l.color, l.size].filter(x => x).join(' / ');
 
-        {# サムネイル画像 #}
+        {# サムネイル: 画像がなければ商品名の頭文字 #}
+        const titleChar = (l.title || '?').charAt(0).toUpperCase();
         const imgCell = l.image_url
           ? '<img class="thumb" src="' + escapeHtml(l.image_url) + '" alt="" loading="lazy" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'">' +
-            '<span class="thumb-placeholder" style="display:none">📷</span>'
-          : '<span class="thumb-placeholder">📷</span>';
+            '<span class="thumb-placeholder" style="display:none">' + titleChar + '</span>'
+          : '<span class="thumb-placeholder">' + titleChar + '</span>';
 
         {# 紐付け状態バッジ #}
         let statusBadges = '';
