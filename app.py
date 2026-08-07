@@ -440,6 +440,32 @@ def setup():
 
 POIZON_LINKS_FILE = BASE_DIR / "poizon_links.json"
 
+# 有名ブランドリスト（spuTitle先頭一致で判定）
+KNOWN_BRANDS = [
+    "SHOEI", "ARAI", "Arai", "On", "Louis Vuitton", "LOUIS",
+    "Dior", "DIOR", "SALOMON", "Salomon", "COACH", "Coach",
+    "Michael Kors", "MICHAEL", "LEGO", "CASIO", "PUMA", "adidas",
+    "Nike", "NIKE", "SEIKO", "Seiko", "G-SHOCK", "Apple",
+]
+
+def _extract_brand(title):
+    """spuTitleの先頭からブランド名を判定。"""
+    if not title:
+        return "その他"
+    for b in KNOWN_BRANDS:
+        if title.lower().startswith(b.lower()):
+            bl = b.lower()
+            if bl in ("arai",): return "ARAI"
+            if bl in ("louis", "louis vuitton"): return "LOUIS VUITTON"
+            if bl in ("dior",): return "DIOR"
+            if bl in ("salomon",): return "SALOMON"
+            if bl in ("coach",): return "COACH"
+            if bl in ("michael", "michael kors"): return "MICHAEL KORS"
+            if bl in ("on",): return "On"
+            if bl in ("seiko",): return "SEIKO"
+            return b.upper()
+    return "その他"
+
 
 def load_poizon_links():
     """POIZON出品と仕入元URLの紐付けを読み込む。
@@ -550,6 +576,8 @@ def poizon_listings_api():
             "source_name": link_info.get("name", ""),
             "linked": bool(link_info.get("url")),
             "monitoring": link_info.get("enabled", False),
+            # ブランド（spuTitle先頭から判定）
+            "brand": _extract_brand(spu_title),
             # 在庫状態（products.jsonのpoizon_sku_id経由でstate.jsonから取得）
             "stock_state": "",
             "stock_detail": "",

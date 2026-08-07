@@ -201,6 +201,11 @@
   .col-status{width:100px}
   .col-action{width:90px;text-align:right;white-space:nowrap}
   .col-stock{width:100px}
+  .brand-tabs{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:12px}
+  .brand-tab{padding:5px 12px;border-radius:var(--radius);border:1px solid var(--border);background:var(--surface);font-size:12px;cursor:pointer;color:var(--text-muted);font-weight:500;white-space:nowrap;transition:background .12s,color .12s}
+  .brand-tab:hover{background:var(--surface-3);color:var(--text)}
+  .brand-tab.active{background:var(--brand);color:#fff;border-color:var(--brand);font-weight:600}
+  .brand-tab .cnt{font-weight:400;opacity:.7;margin-left:3px}
   .stock-badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;white-space:nowrap}
   .stock-in{background:var(--success-soft);color:var(--success)}
   .stock-out{background:var(--danger-soft);color:var(--danger)}
@@ -399,6 +404,9 @@
         </div>
       </div>
 
+      {# ── ブランドタブ ── #}
+      <div class="brand-tabs" id="brandTabs" style="display:none;"></div>
+
       {# ── ツールバー（検索） ── #}
       <div class="toolbar" id="toolbar" style="display:none;">
         <div class="search-box">
@@ -462,6 +470,7 @@
   <script>
     let allListings = [];
     let linkModal = null;
+    let activeBrand = 'ALL';
 
     document.addEventListener('DOMContentLoaded', () => {
       linkModal = new bootstrap.Modal(document.getElementById('linkModal'));
@@ -513,15 +522,23 @@
       toolbar.style.display = '';
 
       const search = (document.getElementById('searchBox')?.value || '').toLowerCase();
-      const filtered = search
-        ? allListings.filter(l =>
+      let filtered = allListings;
+
+      {# ブランドフィルタ #}
+      if (activeBrand !== 'ALL') {
+        filtered = filtered.filter(l => (l.brand || 'その他') === activeBrand);
+      }
+
+      {# 検索フィルタ #}
+      if (search) {
+        filtered = filtered.filter(l =>
             (l.skuId || '').toLowerCase().includes(search) ||
             (l.title || '').toLowerCase().includes(search) ||
             (l.source_name || '').toLowerCase().includes(search) ||
             (l.sellerBiddingNo || '').toLowerCase().includes(search) ||
             (l.color || '').toLowerCase().includes(search) ||
-            (l.size || '').toLowerCase().includes(search))
-        : allListings;
+            (l.size || '').toLowerCase().includes(search));
+      }
 
       {# 検索結果件数表示 #}
       document.getElementById('resultCount').textContent =
@@ -626,6 +643,31 @@
       document.getElementById('statLinked').textContent = linked;
       document.getElementById('statMonitoring').textContent = monitoring;
       document.getElementById('statUnlinked').textContent = unlinked;
+
+      {# ブランドタブ生成 #}
+      renderBrandTabs();
+    }
+
+    function renderBrandTabs() {
+      const counts = {};
+      allListings.forEach(l => {
+        const b = l.brand || 'その他';
+        counts[b] = (counts[b] || 0) + 1;
+      });
+      const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+      const container = document.getElementById('brandTabs');
+      let html = '<button class="brand-tab ' + (activeBrand === 'ALL' ? 'active' : '') + '" onclick="selectBrand(\'ALL\')">すべて<span class="cnt">' + allListings.length + '</span></button>';
+      sorted.forEach(([brand, count]) => {
+        html += '<button class="brand-tab ' + (activeBrand === brand ? 'active' : '') + '" onclick="selectBrand(\'' + brand.replace(/'/g, "\\'") + '\')">' + escapeHtml(brand) + '<span class="cnt">' + count + '</span></button>';
+      });
+      container.innerHTML = html;
+      container.style.display = '';
+    }
+
+    function selectBrand(brand) {
+      activeBrand = brand;
+      renderBrandTabs();
+      renderListings();
     }
 
     function filterListings() {
