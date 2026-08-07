@@ -561,7 +561,12 @@ def poizon_listings_api():
             "tradeStatus": item.get("tradeStatus", 0),
             "tradeSubStatus": item.get("tradeSubStatus", 0),
             "quantity": item.get("quantity", 0),
-            "image_url": "",  # POIZON APIからは画像取得不可
+            "image_url": fetch_poizon_image(
+                spu_id, color,
+                sku_id=item.get("skuId", 0),
+                app_key=config.get("poizon_api_id", ""),
+                app_secret=config.get("poizon_api_key", ""),
+            ) if spu_id else "",
             "source_url": link_info.get("url", ""),
             "source_name": link_info.get("name", ""),
             "linked": bool(link_info.get("url")),

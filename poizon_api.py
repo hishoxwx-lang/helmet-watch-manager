@@ -190,11 +190,56 @@ def get_active_listings(config):
     return query_listings(app_key, app_secret)
 
 
-def fetch_poizon_image(spu_id, color=""):
-    """POIZON APIでは画像が取得できないため、空文字を返す。
+def fetch_poizon_image(spu_id, color="", sku_id=0, app_key="", app_secret=""):
+    """POIZON API（by-sku）で商品画像を取得。
 
-    仕入先URLが紐付いていれば、そちらのog:imageを使う方針。
+    apiId=140 の by-sku エンドポイントを使い、spuInfo.logoUrl から画像URLを取得。
+    skuIdが分かれば個別に取得できる。
+
+    Returns:
+        str: 画像URL（取得失敗時は空文字）
     """
+    if not sku_id or not app_key or not app_secret:
+        return ""
+
+    import hashlib as _hashlib
+    import time as _time
+    import json as _json
+
+    params = {
+        "app_key": app_key,
+        "timestamp": int(_time.time() * 1000),
+        "language": "ja",
+        "timeZone": "Asia/Tokyo",
+        "skuIds": [int(sku_id)],
+        "region": "JP",
+    }
+
+    # 署名
+    sign_str = "&".join(
+        "{}={}".format(quote_plus(str(k)), quote_plus(_normalize_value(params[k])))
+        for k in sorted(params.keys())
+        if params[k] is not None and not (isinstance(params[k], str) and params[k] == "")
+    ) + app_secret
+    params["sign"] = _hashlib.md5(sign_str.encode("utf-8")).hexdigest().upper()
+
+    try:
+        resp = requests.post(
+            BASE_URL + "/dop/api/v1/pop/api/v1/intl-commodity/intl/sku/sku-basic-info/by-sku",
+            json=params,
+            headers={"Content-Type": "application/json"},
+            timeout=15,
+        )
+        data = resp.json()
+        if data.get("data") and isinstance(data["data"], list):
+            for item in data["data"]:
+                spu_info = item.get("spuInfo", {})
+                logo_url = spu_info.get("logoUrl", "")
+                if logo_url:
+                    return logo_url
+    except Exception:
+        pass
+
     return ""
 
 
