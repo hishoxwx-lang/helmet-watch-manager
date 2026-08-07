@@ -143,39 +143,8 @@ def fetch_variants(url):
 @app.route("/")
 @login_required
 def index():
-    products = load_products()
-    state = load_state()
-    config = load_config()
-    rows = []
-    for p in products:
-        s = state.get(str(p.get("id")), {})
-        rows.append({
-            "id": p.get("id"),
-            "name": p.get("name", ""),
-            "url": p.get("url", ""),
-            "size_pattern": p.get("size_pattern", ""),
-            "stock_keyword": p.get("stock_keyword", "在庫"),
-            "enabled": p.get("enabled", True),
-            "site_name": site_name_of(p.get("url", "")),
-            "image_url": p.get("image_url", ""),
-            "poizon_sku_id": p.get("poizon_sku_id", ""),
-            "state": s.get("state"),
-            "state_label": STATE_LABEL.get(s.get("state"), "未確認"),
-            "detail": s.get("detail", ""),
-            "updated_at": s.get("updated_at", ""),
-        })
-    webhook = config.get("discord_webhook_url", "")
-    webhook_masked = ""
-    if webhook:
-        # マスク表示 (先頭12文字 + ... )
-        webhook_masked = webhook[:18] + "..." if len(webhook) > 18 else webhook
-    rows.sort(key=lambda x: (x.get("site_name", ""), x.get("id", 0)))
-    return render_template(
-        "index.html",
-        rows=rows,
-        webhook=webhook,
-        webhook_masked=webhook_masked,
-    )
+    # POIZON出品管理画面へリダイレクト
+    return redirect(url_for("poizon"))
 
 
 @app.route("/add", methods=["POST"])

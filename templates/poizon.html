@@ -341,7 +341,7 @@
       <span>POIZON出品管理</span>
     </div>
     <div class="header-right">
-      <a href="{{ url_for('index') }}" class="btn btn-outline btn-sm">📦 在庫監視</a>
+      <button class="btn btn-primary btn-sm" onclick="runCheck(this)">▶ 今すぐチェック</button>
       <a href="{{ url_for('settings') }}" class="btn btn-outline btn-sm">⚙ 設定</a>
       <a href="{{ url_for('logout') }}" class="btn btn-outline btn-sm">ログアウト</a>
     </div>
@@ -692,6 +692,22 @@
     }
     function escapeQuotes(s) {
       return (s == null ? '' : String(s)).replace(/'/g, "\\'").replace(/"/g, '&quot;');
+    }
+
+    async function runCheck(btn) {
+      btn.disabled = true;
+      btn.textContent = 'チェック中...';
+      try {
+        const resp = await fetch('{{ url_for("run") }}', {redirect: 'follow'});
+        // 結果に関わらず出品一覧を再読み込み
+        loadListings();
+        btn.textContent = '✓ チェック完了';
+        setTimeout(() => { btn.textContent = '▶ 今すぐチェック'; btn.disabled = false; }, 2000);
+      } catch (e) {
+        btn.textContent = '▶ 今すぐチェック';
+        btn.disabled = false;
+        loadListings();
+      }
     }
   </script>
 </body>
