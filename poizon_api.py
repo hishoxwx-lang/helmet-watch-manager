@@ -122,11 +122,13 @@ class PoizonClient:
 
 def query_listings(app_key, app_secret, access_token="",
                    trade_status=2, region="JP", page_size=100,
-                   exclusive_start_offset_id=0):
+                   exclusive_start_offset_id=0, bidding_type=20):
     """apiId=51: 出品一覧を取得。
 
     Args:
         trade_status: 2=出品中（デフォルト）, 4=取消済, 6=成約済
+        bidding_type: 20=通常出品（デフォルト）, 25=事前入庫, 90=その他
+                     0またはNoneで全件取得
         region: JP（デフォルト）
         page_size: 1〜100
         exclusive_start_offset_id: ページング用
@@ -144,12 +146,15 @@ def query_listings(app_key, app_secret, access_token="",
     エラー時: {"error": "..."}
     """
     client = PoizonClient(app_key, app_secret, access_token)
-    data = client.post(LISTING_LIST_PATH, {
+    biz = {
         "tradeStatus": trade_status,
         "region": region,
         "pageSize": page_size,
         "exclusiveStartOffsetId": exclusive_start_offset_id,
-    })
+    }
+    if bidding_type:
+        biz["biddingType"] = bidding_type
+    data = client.post(LISTING_LIST_PATH, biz)
     if "error" in data:
         return data
 

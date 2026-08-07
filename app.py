@@ -516,9 +516,18 @@ def poizon_listings_api():
     if isinstance(result, dict) and "error" in result:
         return jsonify(result), 200  # エラーも200で返す（JS側で表示）
 
-    # 紐付け情報 + 商品情報を付与
+    # 紐付け情報 + 商品情報 + 在庫状態を付与
     from poizon_api import fetch_poizon_image
     links = load_poizon_links()
+    state = load_state()
+    products = load_products()
+    # skuId → product のマップ
+    sku_to_product = {}
+    for p in products:
+        sid = str(p.get("poizon_sku_id", ""))
+        if sid:
+            sku_to_product[sid] = p
+
     enriched = []
     for item in result:
         sku_id = str(item.get("skuId", ""))
@@ -571,7 +580,19 @@ def poizon_listings_api():
             "source_name": link_info.get("name", ""),
             "linked": bool(link_info.get("url")),
             "monitoring": link_info.get("enabled", False),
+            # 在庫状態（products.jsonのpoizon_sku_id経由でstate.jsonから取得）
+            "stock_state": "",
+            "stock_detail": "",
+            "stock_updated": "",
         })
+
+        # 在庫状態を付与
+        product = sku_to_product.get(sku_id)
+        if product:
+            s = state.get(str(product.get("id", "")), {})
+            enriched[-1]["stock_state"] = s.get("state", "")
+            enriched[-1]["stock_detail"] = s.get("detail", "")
+            enriched[-1]["stock_updated"] = s.get("updated_at", "")
 
     return jsonify({"listings": enriched})
 
