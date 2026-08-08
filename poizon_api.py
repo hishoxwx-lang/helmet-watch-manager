@@ -296,20 +296,16 @@ def fetch_poizon_image(spu_id, color="", sku_id=0, app_key="", app_secret=""):
     return imgs.get(str(sku_id), "")
 
 
-def fetch_poizon_images_batch(sku_ids, app_key, app_secret):
-    """複数SKUの画像をバッチ取得（最大20件/1リクエスト）。
-
-    apiId=140 の by-sku エンドポイントにskuIdsリストを渡して
-    一括取得。100件の場合は5リクエストで完了（旧: 100リクエスト）。
+def fetch_poizon_sku_info_batch(sku_ids, app_key, app_secret):
+    """複数SKUの商品情報をバッチ取得（画像・品番・ブランド名）。
 
     Returns:
-        dict: {"skuId": "画像URL", ...}
+        dict: {"skuId": {"image": "...", "article_number": "...", "brand": "..."}}
     """
     if not sku_ids or not app_key or not app_secret:
         return {}
 
     results = {}
-    # 20件ずつバッチ
     for i in range(0, len(sku_ids), 20):
         batch = [int(sid) for sid in sku_ids[i:i+20] if sid]
         if not batch:
@@ -337,19 +333,37 @@ def fetch_poizon_images_batch(sku_ids, app_key, app_secret):
                 for item in data["data"]:
                     spu_info = item.get("spuInfo", {})
                     logo_url = spu_info.get("logoUrl", "")
+                    article_number = spu_info.get("articleNumber", "")
+                    brand_name = spu_info.get("brandName", "")
                     # skuInfoListから各SKUのIDを取得
                     for sku in item.get("skuInfoList", []):
                         sid = str(sku.get("skuId") or sku.get("dwSkuId") or "")
-                        if sid and logo_url:
-                            results[sid] = logo_url
+                        if sid:
+                            results[sid] = {
+                                "image": logo_url,
+                                "article_number": article_number,
+                                "brand": brand_name,
+                            }
                     # フォールバック: item直下のskuId
-                    if not results:
+                    if item.get("skuId"):
                         sid = str(item.get("skuId", ""))
-                        if sid and logo_url:
-                            results[sid] = logo_url
+                        if sid and sid not in results:
+                            results[sid] = {
+                                "image": logo_url,
+                                "article_number": article_number,
+                                "brand": brand_name,
+                            }
         except Exception:
             pass
 
     return results
+
+
+def fetch_poizon_images_batch(sku_ids, app_key, app_secret):
+    """画像URLのみバッチ取得（互換用）。
+    fetch_poizon_sku_info_batch の画像URLだけを返す。
+    """
+    info = fetch_poizon_sku_info_batch(sku_ids, app_key, app_secret)
+    return {sid: d.get("image", "") for sid, d in info.items() if d.get("image")}
 
 

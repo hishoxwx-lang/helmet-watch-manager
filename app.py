@@ -523,11 +523,13 @@ def poizon_listings_api():
         if sid:
             sku_to_product[sid] = p
 
-    # 全SKU画像をバッチ取得（20件×Nリクエスト・旧: 100件×100リクエスト）
+    # 全SKU商品情報をバッチ取得（画像・品番・ブランド名）
     all_sku_ids = [item.get("skuId", 0) for item in result if item.get("skuId")]
     app_key = config.get("poizon_api_id", "")
     app_secret = config.get("poizon_api_key", "")
-    image_map = fetch_poizon_images_batch(all_sku_ids, app_key, app_secret) if all_sku_ids else {}
+    from poizon_api import fetch_poizon_sku_info_batch
+    sku_info_map = fetch_poizon_sku_info_batch(all_sku_ids, app_key, app_secret) if all_sku_ids else {}
+    image_map = {sid: d.get("image", "") for sid, d in sku_info_map.items()}
 
     # 市場価格をバッチ取得
     from poizon_api import fetch_market_prices_batch
@@ -576,7 +578,9 @@ def poizon_listings_api():
             "tradeSubStatus": item.get("tradeSubStatus", 0),
             "quantity": item.get("quantity", 0),
             "image_url": image_map.get(sku_id, ""),
-            # 市場価格
+            # 品番・ブランド名（by-sku APIから取得）
+            "article_number": sku_info_map.get(sku_id, {}).get("article_number", ""),
+            "brand": sku_info_map.get(sku_id, {}).get("brand", "") or _extract_brand(spu_title),
             "market_min": price_map.get(sku_id, {}).get("min_price", 0),
             "cart_price": price_map.get(sku_id, {}).get("cart_price", 0),
             "market_global_min": price_map.get(sku_id, {}).get("global_min", 0),
@@ -586,8 +590,6 @@ def poizon_listings_api():
             "source_name": link_info.get("name", ""),
             "linked": bool(link_info.get("url")),
             "monitoring": link_info.get("enabled", False),
-            # ブランド（spuTitle先頭から判定）
-            "brand": _extract_brand(spu_title),
             # 在庫状態（products.jsonのpoizon_sku_id経由でstate.jsonから取得）
             "stock_state": "",
             "stock_detail": "",
