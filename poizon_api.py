@@ -182,10 +182,11 @@ def cancel_listing(app_key, app_secret, seller_bidding_no, access_token=""):
 
 
 def get_active_listings(config):
-    """config.json から認証情報を読んで出品一覧を取得。
-
+    """config.json から認証情報を読んで出品一覧を取得（全件）。
     config に poizon_api_id / poizon_api_key が必要。
     設定画面で入力済みの前提。
+
+    100件超の場合はページングで全件取得する。
 
     Returns:
         list or {"error": "..."}
@@ -195,7 +196,39 @@ def get_active_listings(config):
     if not app_key or not app_secret:
         return {"error": "POIZON API ID / KEY が未設定（⚙設定画面で入力）"}
 
-    return query_listings(app_key, app_secret)
+    all_items = []
+    offset_id = 0
+    max_pages = 20  # 安全弁（最大2000件）
+
+    for _ in range(max_pages):
+        items = query_listings(
+            app_key, app_secret,
+            exclusive_start_offset_id=offset_id,
+        )
+        if isinstance(items, dict) and "error" in items:
+            if not all_items:
+                return items
+            break
+
+        if not items:
+            break
+
+        all_items.extend(items)
+
+        # 100件未満なら最終ページ
+        if len(items) < 100:
+            break
+
+        # 次ページのオフセットIDを取得
+        last = items[-1]
+        offset_id = last.get("sellerBiddingNoId", 0) or last.get("offsetId", 0)
+        if not offset_id:
+            offset_id = len(all_items)
+
+        # API負荷軽減
+        time.sleep(0.5)
+
+    return all_items
 
 
 def fetch_market_prices_batch(sku_ids, app_key, app_secret, bidding_type=20):

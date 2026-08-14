@@ -13,6 +13,7 @@ import json
 import os
 import sys
 import subprocess
+import datetime
 from functools import wraps
 from pathlib import Path
 
@@ -29,6 +30,10 @@ PRODUCTS_FILE = BASE_DIR / "products.json"
 CONFIG_FILE = BASE_DIR / "config.json"
 STATE_FILE = BASE_DIR / "state.json"
 CHECKER_SCRIPT = BASE_DIR / "checker.py"
+STATE_HISTORY_FILE = BASE_DIR / "state_history.json"
+
+# チェック実行状態管理（非同期化用）
+_check_status = {"status": "idle", "started_at": "", "finished_at": "", "output": ""}
 
 app = Flask(__name__)
 app.config["TEMPLATES_AUTO_RELOAD"] = True
@@ -362,10 +367,9 @@ def update():
     return redirect(url_for("index"))
 
 
-@app.route("/run")
-@login_required
-def run():
-    """監視を手動1回実行。checker.py を subprocess で呼ぶ。"""
+def _run_checker_async():
+    """バックグラウンドで checker.py を実行。"""
+    global _check_status
     try:
         result = subprocess.run(
             [sys.executable, str(CHECKER_SCRIPT)],
@@ -374,19 +378,49 @@ def run():
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=120,
+            timeout=300,
         )
         out = (result.stdout or "").strip()
         err = (result.stderr or "").strip()
-        if result.returncode == 0:
-            flash("チェック完了しました。\n" + out, "success")
-        else:
-            flash("チェック実行でエラーが発生しました。\nSTDOUT:\n" + out + "\nSTDERR:\n" + err, "danger")
+        _check_status["status"] = "done"
+        _check_status["finished_at"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        _check_status["output"] = out if result.returncode == 0 else "STDOUT:\n" + out + "\nSTDERR:\n" + err
     except subprocess.TimeoutExpired:
-        flash("チェックがタイムアウトしました（120秒）。", "danger")
+        _check_status["status"] = "done"
+        _check_status["finished_at"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        _check_status["output"] = "タイムアウト（300秒）"
     except Exception as e:
-        flash("チェック実行に失敗しました: {}".format(e), "danger")
-    return redirect(url_for("index"))
+        _check_status["status"] = "done"
+        _check_status["finished_at"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        _check_status["output"] = "エラー: {}".format(e)
+
+
+@app.route("/run")
+@login_required
+def run():
+    """監視を手動1回実行（非同期・バックグラウンド）。"""
+    global _check_status
+    if _check_status["status"] == "running":
+        return jsonify({"status": "running", "message": "既にチェック実行中です"}), 200
+    _check_status = {
+        "status": "running",
+        "started_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "finished_at": "",
+        "output": "",
+    }
+    import threading
+    t = threading.Thread(target=_run_checker_async, daemon=True)
+    t.start()
+    return jsonify({"status": "running", "message": "チェックを開始しました"}), 200
+
+
+@app.route("/api/check_status")
+@login_required
+def check_status_api():
+    """チェック実行状態を返す。"""
+    if not is_logged_in():
+        return jsonify({"error": "ログインが必要です"}), 401
+    return jsonify(_check_status)
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -701,6 +735,46 @@ def poizon_link_api():
 
     save_json(PRODUCTS_FILE, products)
     return jsonify({"ok": True})
+
+
+# ---------- 履歴API ----------
+@app.route("/api/history")
+@app.route("/api/history/<int:product_id>")
+@login_required
+def history_api(product_id=None):
+    """在庫変化履歴をJSONで返す。product_id指定時はその商品のみ。"""
+    if not is_logged_in():
+        return jsonify({"error": "ログインが必要です"}), 401
+    history = load_json(STATE_HISTORY_FILE, [])
+    if product_id is not None:
+        history = [h for h in history if h.get("product_id") == product_id]
+    # 最新50件（全商品一覧用）または該当全件（個別商品用）
+    if product_id is None:
+        history = history[-50:]
+    history.reverse()  # 新しい順
+    return jsonify({"history": history})
+
+
+# ---------- Discord テスト通知API ----------
+@app.route("/api/test_discord", methods=["POST"])
+@login_required
+def test_discord_api():
+    """Discord Webhookにテスト通知を送信。"""
+    if not is_logged_in():
+        return jsonify({"error": "ログインが必要です"}), 401
+    config = load_config()
+    webhook = (config.get("discord_webhook_url") or "").strip()
+    if not webhook:
+        return jsonify({"error": "Discord Webhook URLが未設定です"}), 400
+    try:
+        import requests as _req
+        payload = {"content": "🔔 テスト通知: 在庫通知くんのDiscord通知設定は正常に動作しています。"}
+        r = _req.post(webhook, json=payload, headers={"Content-Type": "application/json; charset=utf-8"}, timeout=10)
+        if 200 <= r.status_code < 300:
+            return jsonify({"ok": True, "status_code": r.status_code})
+        return jsonify({"error": "HTTP {}: {}".format(r.status_code, r.text[:200])}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 200
 
 
 # ---------- main ----------

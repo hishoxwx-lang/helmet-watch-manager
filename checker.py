@@ -37,6 +37,7 @@ BASE_DIR = Path(__file__).resolve().parent
 PRODUCTS_FILE = BASE_DIR / "products.json"
 CONFIG_FILE = BASE_DIR / "config.json"
 STATE_FILE = BASE_DIR / "state.json"
+STATE_HISTORY_FILE = BASE_DIR / "state_history.json"
 
 IN_STOCK = "IN_STOCK"
 SOLD_OUT = "SOLD_OUT"
@@ -59,6 +60,26 @@ def load_json(path, default):
 def save_json(path, data):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def append_history(product_id, name, prev_state, new_state, detail):
+    """状態変化履歴を state_history.json に追記（最新1000件まで）。"""
+    try:
+        history = load_json(STATE_HISTORY_FILE, [])
+        history.append({
+            "product_id": product_id,
+            "name": name,
+            "prev_state": prev_state or "",
+            "new_state": new_state,
+            "detail": detail,
+            "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        })
+        # 最新1000件まで保持
+        if len(history) > 1000:
+            history = history[-1000:]
+        save_json(STATE_HISTORY_FILE, history)
+    except Exception as e:
+        print("  [!] 履歴保存エラー: {}".format(e))
 
 
 def detect_encoding(content, resp):
@@ -1027,6 +1048,10 @@ def main():
                 print("    -> Discord notified")
             else:
                 print("    -> (Discord webhook not configured, skip notify)")
+
+        # 状態変化履歴を記録（初回・変化時すべて）
+        if prev_state is None or prev_state != new_state:
+            append_history(p.get("id"), name, prev_state, new_state, detail)
 
         # 売切れ時のみ POIZON出品取り下げ連動(在庫通知くん→POIZON API)
         if prev_state == IN_STOCK and new_state == SOLD_OUT:
