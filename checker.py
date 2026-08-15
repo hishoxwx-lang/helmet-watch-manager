@@ -580,9 +580,13 @@ def check_by_glm(html, product, glm_api_key):
         "HTML抜粋:\n{}\n\n"
         "判定基準:\n"
         "- 「在庫あり」「購入可能」「カートに入る」等 → IN_STOCK\n"
-        "- 「在庫切れ」「売切れ」「品切れ」「販売終了」「予定数の販売を終了」等 → SOLD_OUT\n\n"
+        "- 「在庫切れ」「売切れ」「品切れ」「販売終了」「予定数の販売を終了」等 → SOLD_OUT\n"
+        "- 「Access denied」「アクセス拒否」「ボット対策」「CAPTCHA」「Privacy」等、"
+        "アクセス保護ページで商品情報が確認できない → UNKNOWN\n\n"
+        "重要: 商品情報が確認できないだけではSOLD_OUTにしないこと。"
+        "売切れと確定できる根拠がない限りUNKNOWNを返してください。\n\n"
         "回答は以下のJSON形式のみ（他のテキストは不要）:\n"
-        '{{"state": "IN_STOCK" or "SOLD_OUT", "reason": "判定理由（日本語・簡潔に）"}}'
+        '{{"state": "IN_STOCK" or "SOLD_OUT" or "UNKNOWN", "reason": "判定理由（日本語・簡潔に）"}}'
     ).format(name, size or "(指定なし)", excerpt)
 
     try:
@@ -618,7 +622,14 @@ def check_by_glm(html, product, glm_api_key):
             reason = result.get("reason", "")
             if "IN_STOCK" in state_str:
                 return IN_STOCK, "GLM判定: {}".format(reason)
+            elif "UNKNOWN" in state_str:
+                return UNKNOWN, "GLM判定: {}".format(reason)
             elif "SOLD_OUT" in state_str or "SOLD" in state_str:
+                # 誤検知ガード: 理由にアクセス保護系ワードがあればUNKNOWNに差し戻す
+                guard_words = ("アクセス保護", "Access denied", "アクセス拒否", "ボット対策",
+                               "CAPTCHA", "確認できない", "確認できません", "判定できない")
+                if any(w in reason for w in guard_words):
+                    return UNKNOWN, "GLM判定(保護ガード): {}".format(reason)
                 return SOLD_OUT, "GLM判定: {}".format(reason)
             return None, "GLM判定不明: {}".format(content[:100])
 
@@ -653,6 +664,13 @@ def check_generic(url, product, config):
 
     size_pattern = product.get("size_pattern", "")
     stock_keyword = product.get("stock_keyword", "")
+
+    # 1.5 アクセス保護ページ検知（Akamai等の403ページをGLMに投げない）
+    #    「Access denied」等が含まれる場合、商品ページではなくブロックページ。
+    #    ※ブロック文言はページ末尾付近にあることもあるため全文スキャン（正規表現1回・軽量）
+    if any(w in html for w in ("Access denied", "Access Denied", "アクセスが拒否",
+                                "Too Many Requests", "unusual traffic")):
+        return UNKNOWN, "アクセス保護ページ（ボット対策）: サーバーサイド取得不可"
 
     # 2. キーワード判定
     result = check_by_keywords(html, stock_keyword, size_pattern)
