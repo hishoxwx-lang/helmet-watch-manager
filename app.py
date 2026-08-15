@@ -269,6 +269,10 @@ def settings():
             config["poizon_delist_token"] = (request.form.get("poizon_delist_token") or "").strip()
             save_json(CONFIG_FILE, config)
             flash("POIZON連動設定を保存しました。", "success")
+        elif action == "external_token":
+            config["external_api_token"] = (request.form.get("external_api_token") or "").strip()
+            save_json(CONFIG_FILE, config)
+            flash("外部連携トークンを保存しました。", "success")
         elif action == "glm":
             config["glm_api_key"] = (request.form.get("glm_api_key") or "").strip()
             save_json(CONFIG_FILE, config)
@@ -305,6 +309,8 @@ def settings():
     poizon_api_id = config.get("poizon_api_id", "")
     poizon_api_key = config.get("poizon_api_key", "")
     poizon_api_id_masked = (poizon_api_id[:6] + "...") if len(poizon_api_id) > 6 else poizon_api_id
+    ext_token = config.get("external_api_token", "")
+    ext_token_masked = (ext_token[:8] + "...") if len(ext_token) > 8 else ext_token
     return render_template(
         "settings.html",
         webhook=webhook, webhook_masked=webhook_masked,
@@ -313,6 +319,8 @@ def settings():
         glm_key=glm_key, glm_key_masked=glm_key_masked,
         poizon_api_id=poizon_api_id, poizon_api_key=poizon_api_key,
         poizon_api_id_masked=poizon_api_id_masked,
+        ext_token=ext_token,
+        ext_token_masked=ext_token_masked,
     )
 
 
@@ -775,6 +783,133 @@ def test_discord_api():
         return jsonify({"error": "HTTP {}: {}".format(r.status_code, r.text[:200])}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 200
+
+
+# ---------- 外部連携API（Chrome拡張から・トークン認証） ----------
+@app.route("/api/external/link", methods=["POST"])
+def external_link_api():
+    """Chrome拡張（バックオフィスURL登録拡張）からの仕入先URL登録。
+
+    ログイン不要の代わりに X-Api-Token ヘッダーで認証する。
+    config.json の external_api_token が未設定の場合は 403 を返す。
+
+    パラメータ（form or JSON）:
+        sku_id: POIZONのSKU ID（必須）
+        url: 仕入先URL（必須）
+        name: 商品名（任意）
+        enabled: 監視有効（デフォルト on）
+        token: 認証トークン（ヘッダー X-Api-Token でも可）
+    """
+    # JSON でも form でも受け取る
+    if request.is_json:
+        req = request.get_json(silent=True) or {}
+    else:
+        req = request.form
+
+    config = load_config()
+    expected = (config.get("external_api_token") or "").strip()
+
+    # 認証（ヘッダー優先、なければパラメータ）
+    token = request.headers.get("X-Api-Token", "") or (req.get("token") or "").strip()
+    if not expected:
+        return jsonify({"error": "外部連携トークンが未設定です。設定画面で設定してください。"}), 403
+    if token != expected:
+        return jsonify({"error": "トークンが不正です"}), 403
+
+    sku_id = (str(req.get("sku_id") or "")).strip()
+    url = (str(req.get("url") or "")).strip()
+    name = (str(req.get("name") or "")).strip()
+    enabled = str(req.get("enabled") or "on") != "off"
+
+    if not sku_id:
+        return jsonify({"error": "sku_idが必要です"}), 400
+    if not url:
+        return jsonify({"error": "urlが必要です"}), 400
+
+    # poizon_links.json に保存
+    links = load_poizon_links()
+
+    if req.get("action") == "unlink":
+        links.pop(sku_id, None)
+        save_poizon_links(links)
+        return jsonify({"ok": True})
+
+    links[sku_id] = {
+        "url": url,
+        "name": name,
+        "enabled": enabled,
+    }
+    save_poizon_links(links)
+
+    # products.json にも追加（監視対象化）
+    products = load_products()
+    existing = None
+    for p in products:
+        if str(p.get("poizon_sku_id", "")) == sku_id:
+            existing = p
+            break
+
+    if existing:
+        existing["url"] = url
+        if name:
+            existing["name"] = name
+        existing["enabled"] = enabled
+    else:
+        products.append({
+            "id": next_product_id(products),
+            "name": name or "POIZON:{}".format(sku_id),
+            "url": url,
+            "size_pattern": "",
+            "stock_keyword": "",
+            "enabled": enabled,
+            "image_url": "",
+            "poizon_sku_id": sku_id,
+        })
+
+    save_json(PRODUCTS_FILE, products)
+    return jsonify({"ok": True, "sku_id": sku_id, "monitoring": enabled})
+
+
+@app.route("/api/external/state", methods=["GET"])
+def external_state_api():
+    """Chrome拡張から在庫状態を照会（トークン認証）。
+
+    ?sku_ids=111,222,333 の形式で複数指定可能。
+    戻り値: {"states": {"111": {"state": "IN_STOCK", "updated_at": "..."}, ...}}
+    """
+    config = load_config()
+    expected = (config.get("external_api_token") or "").strip()
+    token = request.headers.get("X-Api-Token", "") or (request.args.get("token") or "").strip()
+    if not expected:
+        return jsonify({"error": "外部連携トークンが未設定です"}), 403
+    if token != expected:
+        return jsonify({"error": "トークンが不正です"}), 403
+
+    sku_ids = [s.strip() for s in (request.args.get("sku_ids") or "").split(",") if s.strip()]
+    if not sku_ids:
+        return jsonify({"error": "sku_idsが必要です"}), 400
+
+    products = load_products()
+    state = load_state()
+    sku_to_pid = {}
+    for p in products:
+        sid = str(p.get("poizon_sku_id", ""))
+        if sid:
+            sku_to_pid[sid] = str(p.get("id", ""))
+
+    result = {}
+    links = load_poizon_links()
+    for sid in sku_ids:
+        info = {"state": "", "detail": "", "updated_at": "", "linked": sid in links}
+        pid = sku_to_pid.get(sid)
+        if pid:
+            s = state.get(pid, {})
+            info["state"] = s.get("state", "")
+            info["detail"] = s.get("detail", "")
+            info["updated_at"] = s.get("updated_at", "")
+        result[sid] = info
+
+    return jsonify({"states": result})
 
 
 # ---------- main ----------

@@ -150,6 +150,34 @@
     </div>
 
     <div class="card mb-3">
+      <div class="card-header bg-white"><strong>🔗 外部連携（Chrome拡張）</strong></div>
+      <div class="card-body">
+        <p class="text-muted small mb-2">
+          POIZONバックオフィスのURL登録拡張から在庫通知くんへ直接登録するためのトークン。<br>
+          設定済み:
+          {% if ext_token %}
+            <span class="mono">{{ ext_token_masked }}</span>
+          {% else %}
+            <span class="text-warning">未設定</span>
+          {% endif %}
+        </p>
+        <form method="post" action="{{ url_for('settings') }}">
+          <input type="hidden" name="action" value="external_token">
+          <label class="form-label">外部連携トークン</label>
+          <div class="input-group">
+            <input type="text" name="external_api_token" class="form-control"
+                   placeholder="英数字のランダム文字列" value="{{ ext_token }}">
+            <button type="submit" class="btn btn-primary">保存</button>
+          </div>
+          <div class="form-text">
+            seller.poizon.com の「+URL」ボタンから即座に在庫連動できるようになります。<br>
+            <small class="text-muted">※ 拡張機能のconfig.jsにも同じトークンを設定してください。</small>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="card mb-3">
       <div class="card-header bg-white"><strong>パスワード変更</strong></div>
       <div class="card-body">
         <form method="post" action="{{ url_for('settings') }}">
