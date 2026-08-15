@@ -1057,17 +1057,16 @@ def external_auto_link_api():
         # 照合条件: 品番一致が前提。その上でサイズ展開と照合。
         # （品番なし照合は誤紐付けを起こすため禁止）
         hit = False
-        # 品番は双方向の部分一致で許容:
-        #   Yahoo: WF945-JZ8731 / POIZON: JZ8731 → 前者が後者を含む
-        #   Yahoo: JZ8731 / POIZON: WF945-JZ8731-M → 逆も同様
+        # 品番照合: 完全一致 or ハイフン区切りのトークン単位一致のみ許容。
+        # 単純な部分一致（in）は「Z8」が「WF945-JZ8731」にヒットする誤照合を起こすため禁止。
+        #   Yahoo: WF945-JZ8731 / POIZON: JZ8731 → トークン {WF945,JZ8731} ∩ {JZ8731} ≠ ∅ でOK
+        #   Yahoo: WF945-JZ8731 / POIZON: Z8 → トークン不一致 → 除外
         pc_u = (product_code or "").upper()
-        article_match = bool(
-            pc_u and item_article and (
-                pc_u == item_article or
-                pc_u in item_article or
-                item_article in pc_u
-            )
-        )
+        pc_tokens = set(t for t in pc_u.replace("_", "-").split("-") if len(t) >= 4)
+        ia_tokens = set(t for t in item_article.replace("_", "-").split("-") if len(t) >= 4)
+        article_match = bool(pc_u and item_article and (
+            pc_u == item_article or (pc_tokens & ia_tokens)
+        ))
         if article_match:
             if variants:
                 for v in variants:
