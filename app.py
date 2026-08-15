@@ -912,6 +912,227 @@ def external_state_api():
     return jsonify({"states": result})
 
 
+# ---------- URL一括紐付けAPI（SKU自動照合） ----------
+@app.route("/api/external/auto_link", methods=["POST"])
+def external_auto_link_api():
+    """仕入先URLを1つ受け取り、サイズ展開を抽出してPOIZON出品SKUに自動紐付けする。
+
+    フロー:
+      1. 仕入先URLを取得（Yahoo!ショッピングは__NEXT_DATA__からサイズ抽出）
+      2. POIZON出品一覧（apiId=51）を取得
+      3. サイズ（or URLに含まれる品番）で照合
+      4.一致した全SKUに poizon_links.json + products.json 登録（監視開始）
+
+    パラメータ: url（必須）, token / X-Api-Token（必須）
+    戻り値: {"ok": true, "linked": [{sku_id, size, name}...], "skipped": [...]}
+    """
+    if request.is_json:
+        req = request.get_json(silent=True) or {}
+    else:
+        req = request.form
+
+    config = load_config()
+    expected = (config.get("external_api_token") or "").strip()
+    token = request.headers.get("X-Api-Token", "") or (req.get("token") or "").strip()
+    if not expected:
+        return jsonify({"error": "外部連携トークンが未設定です。設定画面で設定してください。"}), 403
+    if token != expected:
+        return jsonify({"error": "トークンが不正です"}), 403
+
+    url = (str(req.get("url") or "")).strip()
+    if not url or not url.startswith("http"):
+        return jsonify({"error": "urlが必要です"}), 400
+
+    # --- 1. 仕入先ページからサイズ展開を抽出 ---
+    variants = []  # [{"size": "M", "color": "", "label": "..."}]
+    page_title = ""
+    product_code = ""
+    try:
+        from checker import fetch_html_auto
+        html = fetch_html_auto(url)
+    except Exception as e:
+        return jsonify({"error": "仕入先ページの取得に失敗: {}".format(e)}), 200
+
+    try:
+        import re as _re
+        import json as _json
+        m = _re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html, _re.S)
+        if m and "yahoo.co.jp" in url.lower():
+            data = _json.loads(m.group(1))
+            item = data.get("props", {}).get("pageProps", {}).get("item", {})
+            page_title = item.get("name", "")
+            # individualItemList: skuId + optionList(サイズ/カラー) + stock
+            stock_map = {}
+            for it in item.get("individualItemList", []):
+                size = ""
+                color = ""
+                for opt in it.get("optionList", []):
+                    nm = (opt.get("name") or "").lower()
+                    if nm in ("サイズ", "size"):
+                        size = opt.get("choiceName", "")
+                    elif nm in ("カラー", "色", "color"):
+                        color = opt.get("choiceName", "")
+                if size or color:
+                    variants.append({"size": size, "color": color, "label": (color + " " + size).strip()})
+            # 品番抽出: skuIdListのキー（例: WF945-JZ8731-M）から
+            for ent in item.get("skuIdList", []):
+                if isinstance(ent, dict):
+                    for k in ent.keys():
+                        mm = _re.match(r"^([A-Z0-9]+-[A-Z0-9]+)", k)
+                        if mm:
+                            product_code = mm.group(1)
+                            break
+                if product_code:
+                    break
+            if not product_code:
+                # ページタイトルやheadlineから品番抽出（例: JZ8731）
+                mm = _re.search(r"\b([A-Z]{1,3}\d{4,6}(?:-[A-Z0-9]+)?)\b", page_title)
+                if mm:
+                    product_code = mm.group(1)
+        if not variants:
+            # Yahoo以外のサイト: 汎用バリアント抽出（正規表現）
+            from checker import fetch_variants_fast
+            try:
+                v = fetch_variants_fast(url, (config.get("glm_api_key") or "").strip())
+                for s in (v.get("sizes") or [])[:20]:
+                    variants.append({"size": str(s), "color": "", "label": str(s)})
+            except Exception:
+                pass
+    except Exception as e:
+        # 抽出失敗でも続行（出品一覧側の品番照合で試みる）
+        pass
+
+    # --- 2. POIZON出品一覧取得 ---
+    from poizon_api import get_active_listings
+    result = get_active_listings(config)
+    if isinstance(result, dict) and "error" in result:
+        return jsonify({"error": "POIZON出品一覧の取得に失敗: {}".format(result.get("error", ""))}), 200
+
+    # --- 3. 品番・サイズで照合 ---
+    # by-sku APIで品番・ブランド取得（バッチ）
+    all_sku_ids = [item.get("skuId") for item in result if item.get("skuId")]
+    app_key = config.get("poizon_api_id", "")
+    app_secret = config.get("poizon_api_key", "")
+    from poizon_api import fetch_poizon_sku_info_batch
+    sku_info_map = fetch_poizon_sku_info_batch(all_sku_ids, app_key, app_secret) if all_sku_ids else {}
+
+    def _size_of(item):
+        sku_prop_str = item.get("skuSaleProp", "[]")
+        size = ""
+        color = ""
+        try:
+            props = json.loads(sku_prop_str) if isinstance(sku_prop_str, str) else sku_prop_str
+            for p in props:
+                nm = (p.get("name") or "").lower()
+                if nm in ("size", "サイズ"):
+                    size = p.get("value", "")
+                elif nm in ("color", "カラー", "色"):
+                    color = p.get("value", "")
+        except Exception:
+            pass
+        if not size:
+            for info in item.get("regionSalePvInfoList", []):
+                if info.get("name") in ("サイズ", "Size") and not size:
+                    size = info.get("localValue", "")
+                elif info.get("name") in ("カラー", "Color", "色") and not color:
+                    color = info.get("localValue", "")
+        return size, color
+
+    def _norm_size(s):
+        return str(s or "").strip().upper().replace("サイズ", "").replace("SIZE", "").replace("CM", "").replace("ｃｍ", "").replace(".", "").replace(" ", "")
+
+    matched = []
+    for item in result:
+        sku_id = str(item.get("skuId", ""))
+        if not sku_id:
+            continue
+        info = sku_info_map.get(sku_id, {})
+        item_article = (info.get("article_number") or "").strip().upper()
+        # POIZON品番はCJKサフィックス付きのことがある（例: JZ8731包）
+        import re as _re2
+        item_article = _re2.sub(r"[^A-Z0-9\-]", "", item_article)
+        size, color = _size_of(item)
+        spu_title = item.get("spuTitle", "")
+
+        # 照合条件: 品番一致が前提。その上でサイズ展開と照合。
+        # （品番なし照合は誤紐付けを起こすため禁止）
+        hit = False
+        # 品番は双方向の部分一致で許容:
+        #   Yahoo: WF945-JZ8731 / POIZON: JZ8731 → 前者が後者を含む
+        #   Yahoo: JZ8731 / POIZON: WF945-JZ8731-M → 逆も同様
+        pc_u = (product_code or "").upper()
+        article_match = bool(
+            pc_u and item_article and (
+                pc_u == item_article or
+                pc_u in item_article or
+                item_article in pc_u
+            )
+        )
+        if article_match:
+            if variants:
+                for v in variants:
+                    vs = _norm_size(v.get("size"))
+                    ps = _norm_size(size)
+                    # サイズ一致（バリアントにサイズがあってPOIZON側にもサイズがある場合）
+                    if vs and vs == ps:
+                        hit = True
+                        break
+                    # バリアントにサイズ情報なし or POIZON側にサイズなし → 品番一致で全SKU対象
+                    if not vs or not ps:
+                        hit = True
+                        break
+            else:
+                # バリアント抽出できなかった: 品番一致のみで全SKU
+                hit = True
+
+        if hit:
+            matched.append({"sku_id": sku_id, "size": size, "color": color,
+                            "name": spu_title, "article": item_article})
+
+    if not matched:
+        return jsonify({"ok": False,
+                        "error": "一致するPOIZON出品が見つかりませんでした",
+                        "page_title": page_title, "product_code": product_code,
+                        "variants": [v.get("label") for v in variants],
+                        "poizon_count": len(result)}), 200
+
+    # --- 4. 全matched SKUに登録 ---
+    links = load_poizon_links()
+    products = load_products()
+    sku_to_product = {}
+    for p in products:
+        sid = str(p.get("poizon_sku_id", ""))
+        if sid:
+            sku_to_product[sid] = p
+
+    linked = []
+    for m_ in matched:
+        sid = m_["sku_id"]
+        label = (m_["name"] or "")[:60] + (" [" + (m_["color"] + " " + m_["size"]).strip() + "]" if (m_["size"] or m_["color"]) else "")
+        links[sid] = {"url": url, "name": label, "enabled": True}
+        if sid in sku_to_product:
+            sku_to_product[sid]["url"] = url
+            sku_to_product[sid]["enabled"] = True
+        else:
+            products.append({
+                "id": next_product_id(products),
+                "name": label or "POIZON:{}".format(sid),
+                "url": url,
+                "size_pattern": m_["size"],
+                "stock_keyword": "",
+                "enabled": True,
+                "image_url": "",
+                "poizon_sku_id": sid,
+            })
+        linked.append({"sku_id": sid, "size": m_["size"], "color": m_["color"], "name": label})
+
+    save_poizon_links(links)
+    save_json(PRODUCTS_FILE, products)
+
+    return jsonify({"ok": True, "linked": linked, "count": len(linked),
+                    "page_title": page_title, "product_code": product_code})
+
+
 # ---------- main ----------
 def main():
     config = load_config()
