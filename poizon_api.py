@@ -163,7 +163,8 @@ def query_listings(app_key, app_secret, access_token="",
 
     listing_data = data.get("data", {})
     items = listing_data.get("list", [])
-    return items
+    # ページング用: APIが返す lastOffsetId を添付（リストそのものではなく dict で返す）
+    return {"items": items, "last_offset_id": listing_data.get("lastOffsetId") or 0}
 
 
 def cancel_listing(app_key, app_secret, seller_bidding_no, access_token=""):
@@ -199,16 +200,20 @@ def get_active_listings(config):
     all_items = []
     offset_id = 0
     max_pages = 20  # 安全弁（最大2000件）
+    seen_offsets = set()
 
     for _ in range(max_pages):
-        items = query_listings(
+        result = query_listings(
             app_key, app_secret,
             exclusive_start_offset_id=offset_id,
         )
-        if isinstance(items, dict) and "error" in items:
+        if isinstance(result, dict) and "error" in result:
             if not all_items:
-                return items
+                return result
             break
+
+        items = result.get("items", [])
+        next_offset = int(result.get("last_offset_id") or 0)
 
         if not items:
             break
@@ -219,14 +224,11 @@ def get_active_listings(config):
         if len(items) < 100:
             break
 
-        # 次ページのオフセットIDを取得
-        last = items[-1]
-        offset_id = last.get("sellerBiddingNoId", 0) or last.get("offsetId", 0)
-        if not offset_id:
-            offset_id = len(all_items)
-
-        # API負荷軽減
-        time.sleep(0.5)
+        # lastOffsetId が無い/前回と同じなら終了（無限ループ防止）
+        if not next_offset or next_offset in seen_offsets:
+            break
+        seen_offsets.add(next_offset)
+        offset_id = next_offset
 
     return all_items
 
