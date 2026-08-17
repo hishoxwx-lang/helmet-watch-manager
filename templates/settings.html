@@ -150,6 +150,30 @@
     </div>
 
     <div class="card mb-3">
+      <div class="card-header bg-white"><strong>⚙ 自動価格調整</strong></div>
+      <div class="card-body">
+        <p class="text-muted small mb-2">
+          「⚙ 自動価格調整」ボタン実行時の最小利益額（実質利益 = 新価格×0.94−1,500−仕入値）。<br>
+          この利益を下回る調整はスキップされます。
+          {% if auto_min_profit is defined and auto_min_profit != 0 %}
+            現在: <span class="mono">¥{{ "{:,}".format(auto_min_profit) }}</span>
+          {% else %}
+            現在: <span class="text-warning">0円（ガード無効）</span>
+          {% endif %}
+        </p>
+        <form method="post" action="{{ url_for('settings') }}">
+          <input type="hidden" name="action" value="auto_adjust">
+          <label class="form-label">最小利益額（円）</label>
+          <div class="input-group" style="max-width:300px">
+            <input type="number" name="min_profit" class="form-control" min="0"
+                   placeholder="0" value="{{ auto_min_profit if auto_min_profit is defined else 0 }}">
+            <button type="submit" class="btn btn-primary">保存</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="card mb-3">
       <div class="card-header bg-white"><strong>🔗 外部連携（Chrome拡張）</strong></div>
       <div class="card-body">
         <p class="text-muted small mb-2">

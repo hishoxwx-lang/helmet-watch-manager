@@ -77,6 +77,12 @@
   .col-sku{width:110px} .col-article{width:120px} .col-price{width:90px;text-align:right}
   .col-status{width:100px} .col-action{width:120px;text-align:right;white-space:nowrap}
   .col-stock{width:100px} .col-market{width:90px;text-align:right} .col-cart{width:90px;text-align:right}
+  .col-cost{width:90px;text-align:right} .col-profit{width:90px;text-align:right}
+  .cost-editable{cursor:pointer;border-bottom:1px dashed var(--text-muted)}
+  .cost-editable:hover{color:var(--accent);border-color:var(--accent)}
+  .profit-pos{color:var(--success);font-weight:600}
+  .profit-neg{color:var(--danger);font-weight:600}
+  .cost-input{width:75px;padding:2px 4px;border:1px solid var(--accent);border-radius:3px;font-size:12px;font-weight:600;text-align:right;font-variant-numeric:tabular-nums}
   .price-editable{cursor:pointer;border-bottom:1px dashed var(--text-muted)}
   .price-editable:hover{color:var(--accent);border-color:var(--accent)}
   .price-input{width:80px;padding:2px 4px;border:1px solid var(--accent);border-radius:3px;font-size:12px;font-weight:600;text-align:right;font-variant-numeric:tabular-nums}
@@ -183,6 +189,7 @@
         </div>
         <div class="page-actions">
           <button class="btn btn-primary btn-sm" id="refreshBtn">🔄 出品一覧を取得</button>
+          <button class="btn btn-outline btn-sm" id="autoAdjustBtn" title="最小利益を守りながら市場最低値へ自動調整">⚙ 自動価格調整</button>
         </div>
       </div>
 
@@ -199,6 +206,7 @@
         <span>選択中: <span class="batch-count" id="batchCount">0</span> 件</span>
         <button class="btn btn-warn btn-sm" id="batchAdjustBtn">📉 市場最低値に一括調整</button>
         <button class="btn btn-outline btn-sm" id="clearSelBtn">選択解除</button>
+        <span style="margin-left:auto;font-size:11px;color:var(--text-muted)" id="autoAdjustInfo"></span>
         <div class="batch-progress" id="batchProgress">
           <div class="batch-progress-bar" id="batchProgressBar" style="width:0%"></div>
         </div>
@@ -313,6 +321,7 @@
       document.getElementById('updateBtn').addEventListener('click', function() { updateVersion(this); });
       document.getElementById('searchBox').addEventListener('input', filterListings);
       document.getElementById('batchAdjustBtn').addEventListener('click', batchAdjustToMarketPrice);
+      document.getElementById('autoAdjustBtn').addEventListener('click', runAutoAdjust);
       document.getElementById('clearSelBtn').addEventListener('click', clearSelection);
       document.getElementById('unlinkBtn').addEventListener('click', unlinkItem);
       document.getElementById('linkSaveBtn').addEventListener('click', function() {
@@ -350,6 +359,12 @@
     // === テーブルクリック委譲 ===
     function handleTableClick(e) {
       var target = e.target;
+      // 仕入値編集
+      var ce = target.closest('.cost-editable');
+      if (ce) {
+        editCost(ce, ce.dataset.sku, parseInt(ce.dataset.cost) || 0);
+        return;
+      }
       // 価格編集
       var pe = target.closest('.price-editable');
       if (pe) {
@@ -452,6 +467,8 @@
           case 'article': va=a.article_number||''; vb=b.article_number||''; break;
           case 'price': va=a.price||0; vb=b.price||0; break;
           case 'cart': va=a.cart_price||0; vb=b.cart_price||0; break;
+          case 'cost': va=a.cost_price||0; vb=b.cost_price||0; break;
+          case 'profit': va=a.profit||0; vb=b.profit||0; break;
           case 'market': va=a.market_min||0; vb=b.market_min||0; break;
           case 'stock':
             var ord={'IN_STOCK':0,'SOLD_OUT':1,'UNKNOWN':2,'':3};
@@ -521,6 +538,8 @@
         '<th class="col-article sortable ' + sortCls('article') + '" data-col="article">品番 ' + sortIcon('article') + '</th>' +
         '<th class="col-price sortable ' + sortCls('price') + '" style="text-align:right" data-col="price">価格 ' + sortIcon('price') + '</th>' +
         '<th class="col-cart sortable ' + sortCls('cart') + '" style="text-align:right" data-col="cart">カート価格 ' + sortIcon('cart') + '</th>' +
+        '<th class="col-cost sortable ' + sortCls('cost') + '" style="text-align:right" data-col="cost">仕入値 ' + sortIcon('cost') + '</th>' +
+        '<th class="col-profit sortable ' + sortCls('profit') + '" style="text-align:right" data-col="profit">利益 ' + sortIcon('profit') + '</th>' +
         '<th class="col-market sortable ' + sortCls('market') + '" style="text-align:right" data-col="market">市場最低値 ' + sortIcon('market') + '</th>' +
         '<th class="col-stock sortable ' + sortCls('stock') + '" data-col="stock">仕入先在庫 ' + sortIcon('stock') + '</th>' +
         '<th class="col-status">紐付け</th>' +
@@ -561,6 +580,19 @@
         html += '<td class="col-price"><div class="price-cell"><span class="price-editable" data-bidding="' + escapeHtml(l.sellerBiddingNo) + '" data-sku="' + escapeHtml(l.globalSkuId) + '" data-price="' + (l.price||0) + '">' + escapeHtml(price) + '</span><span class="currency">' + escapeHtml(currency) + '</span></div></td>';
         // カート価格
         html += '<td class="col-cart"><div class="price-cell">' + (l.cart_price ? '¥' + Number(l.cart_price).toLocaleString() : '—') + '</div></td>';
+        // 仕入値（インライン編集可）
+        if (l.linked) {
+          html += '<td class="col-cost"><div class="price-cell"><span class="cost-editable" data-sku="' + escapeHtml(l.skuId) + '" data-cost="' + (l.cost_price||0) + '">' + (l.cost_price ? '¥' + Number(l.cost_price).toLocaleString() : '— 設定') + '</span></div></td>';
+        } else {
+          html += '<td class="col-cost">—</td>';
+        }
+        // 利益
+        if (l.profit) {
+          var pcls = l.profit >= 0 ? 'profit-pos' : 'profit-neg';
+          html += '<td class="col-profit"><span class="' + pcls + '">' + (l.profit > 0 ? '+' : '') + '¥' + Number(l.profit).toLocaleString() + '</span></td>';
+        } else {
+          html += '<td class="col-profit">—</td>';
+        }
         // 市場価格
         var myP = l.price||0, mMin = l.market_min||0, mJP = l.market_jp||0;
         if (mMin > 0) {
@@ -747,6 +779,102 @@
         var data = await resp.json();
         if (data.ok) { linkModal.hide(); loadListings(); }
       } catch (e) { alert('通信エラー: ' + e); }
+    }
+
+    // === 仕入値インライン編集 ===
+    function editCost(span, skuId, currentCost) {
+      var td = span.parentElement;
+      var input = document.createElement('input');
+      input.type = 'number'; input.value = currentCost || ''; input.className = 'cost-input';
+      input.placeholder = '仕入値';
+      td.innerHTML = ''; td.appendChild(input);
+      input.focus();
+      if (currentCost) input.select();
+      function restore(cost) {
+        td.innerHTML = '<span class="cost-editable" data-sku="' + escapeHtml(skuId) + '" data-cost="' + (cost||0) + '">' + (cost ? '¥' + Number(cost).toLocaleString() : '— 設定') + '</span>';
+      }
+      async function save() {
+        var newCost = parseInt(input.value) || 0;
+        if (newCost === (currentCost || 0)) { restore(newCost); return; }
+        td.innerHTML = '<span style="color:var(--text-muted)">保存中...</span>';
+        var fd = new FormData();
+        fd.append('sku_id', skuId); fd.append('cost_price', newCost);
+        try {
+          var resp = await fetch(API_UPDATE_COST, {method:'POST', body:fd});
+          var data = await resp.json();
+          if (data.ok) {
+            var item = allListings.find(function(l) { return String(l.skuId) === String(skuId); });
+            if (item) {
+              item.cost_price = newCost;
+              item.profit = newCost ? ((item.price||0) - newCost) : 0;
+            }
+            restore(newCost);
+            showToast('仕入値を保存しました', 'success');
+            // 行の利益表示を更新（全再描画は重いので対象行だけ）
+            renderListings();
+          } else { alert('エラー: ' + (data.error || '不明')); restore(currentCost); }
+        } catch(e) { alert('通信エラー: ' + e); restore(currentCost); }
+      }
+      input.addEventListener('blur', save);
+      input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') input.blur();
+        if (e.key === 'Escape') restore(currentCost);
+      });
+    }
+
+    // === 自動価格調整 ===
+    var API_UPDATE_COST = '{{ url_for("poizon_update_cost_api") }}';
+    var API_AUTO_ADJUST = '{{ url_for("poizon_auto_adjust_api") }}';
+
+    async function runAutoAdjust() {
+      var btn = document.getElementById('autoAdjustBtn');
+      var info = document.getElementById('autoAdjustInfo');
+      btn.disabled = true;
+      btn.textContent = '📊 照会中...';
+      try {
+        // 選択があれば対象SKU限定、なければ全体
+        var skuIds = '';
+        if (selectedSkus.size > 0) {
+          skuIds = Array.from(selectedSkus).join(',');
+        }
+        // ①ドライラン（シミュレーション）
+        var fd = new FormData();
+        fd.append('sku_ids', skuIds);
+        fd.append('dry_run', '1');
+        fd.append('use_net', '1');
+        var resp = await fetch(API_AUTO_ADJUST, {method:'POST', body:fd});
+        var data = await resp.json();
+        if (!data.ok) { alert('エラー: ' + (data.error || '不明')); return; }
+        var plan = data.plan || [];
+        var adjustable = plan.filter(function(p) { return p.action === 'adjust'; });
+        var skipped = plan.length - adjustable.length;
+        if (!plan.length) { alert('調整対象がありません。\n（仕入値未設定 or 市場最低値以下 or すでに最安）'); return; }
+        var summary = adjustable.slice(0, 15).map(function(p) {
+          return p.title.substring(0,25) + ': ¥' + Number(p.current).toLocaleString() + ' → ¥' + Number(p.new).toLocaleString() + ' (利益¥' + Number(p.profit).toLocaleString() + ')';
+        }).join('\n');
+        if (adjustable.length > 15) summary += '\n...他' + (adjustable.length - 15) + '件';
+        var msg = '【シミュレーション】\n調整対象: ' + adjustable.length + '件 / スキップ: ' + skipped + '件\n\n' + summary + '\n\n実行しますか？';
+        if (!confirm(msg)) return;
+        // ②実行
+        btn.textContent = '⚙ 調整中...';
+        var fd2 = new FormData();
+        fd2.append('sku_ids', skuIds);
+        fd2.append('dry_run', '0');
+        fd2.append('use_net', '1');
+        var resp2 = await fetch(API_AUTO_ADJUST, {method:'POST', body:fd2});
+        var data2 = await resp2.json();
+        if (data2.ok) {
+          showToast('自動調整完了: 成功' + data2.adjusted + '件 / 失敗' + data2.failed + '件', 'success');
+          loadListings();
+        } else {
+          alert('エラー: ' + (data2.error || '不明'));
+        }
+      } catch(e) {
+        alert('通信エラー: ' + e);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '⚙ 自動価格調整';
+      }
     }
 
     // === G: 非同期チェック ===

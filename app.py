@@ -269,6 +269,13 @@ def settings():
             config["poizon_delist_token"] = (request.form.get("poizon_delist_token") or "").strip()
             save_json(CONFIG_FILE, config)
             flash("POIZON連動設定を保存しました。", "success")
+        elif action == "auto_adjust":
+            try:
+                config["auto_adjust_min_profit"] = int(request.form.get("min_profit") or 0)
+            except ValueError:
+                config["auto_adjust_min_profit"] = 0
+            save_json(CONFIG_FILE, config)
+            flash("自動調整設定を保存しました。", "success")
         elif action == "external_token":
             config["external_api_token"] = (request.form.get("external_api_token") or "").strip()
             save_json(CONFIG_FILE, config)
@@ -311,6 +318,7 @@ def settings():
     poizon_api_id_masked = (poizon_api_id[:6] + "...") if len(poizon_api_id) > 6 else poizon_api_id
     ext_token = config.get("external_api_token", "")
     ext_token_masked = (ext_token[:8] + "...") if len(ext_token) > 8 else ext_token
+    auto_min_profit = int(config.get("auto_adjust_min_profit") or 0)
     return render_template(
         "settings.html",
         webhook=webhook, webhook_masked=webhook_masked,
@@ -321,6 +329,7 @@ def settings():
         poizon_api_id_masked=poizon_api_id_masked,
         ext_token=ext_token,
         ext_token_masked=ext_token_masked,
+        auto_min_profit=auto_min_profit,
     )
 
 
@@ -630,6 +639,8 @@ def poizon_listings_api():
             "global_sku_id": item.get("globalSkuId", 0),
             "source_url": link_info.get("url", ""),
             "source_name": link_info.get("name", ""),
+            "cost_price": link_info.get("cost_price", 0) or 0,
+            "profit": 0,
             "linked": bool(link_info.get("url")),
             "monitoring": link_info.get("enabled", False),
             # 在庫状態（products.jsonのpoizon_sku_id経由でstate.jsonから取得）
@@ -637,6 +648,12 @@ def poizon_listings_api():
             "stock_detail": "",
             "stock_updated": "",
         })
+
+        # 利益計算（自価格 - 仕入値）
+        cp = enriched[-1].get("cost_price", 0)
+        my_price = enriched[-1].get("price", 0) or 0
+        if cp and my_price:
+            enriched[-1]["profit"] = my_price - cp
 
         # 在庫状態を付与
         product = sku_to_product.get(sku_id)
@@ -704,11 +721,19 @@ def poizon_link_api():
     if not url:
         return jsonify({"error": "URLが必要"}), 400
 
+    cost_price = (str(req_or_form_cost(request) or "0")).strip()
+    try:
+        cost_price = int(float(cost_price))
+    except ValueError:
+        cost_price = 0
+
     links[sku_id] = {
         "url": url,
         "name": name,
         "enabled": enabled,
     }
+    if cost_price > 0:
+        links[sku_id]["cost_price"] = cost_price
     save_poizon_links(links)
 
     # products.json にも追加（監視対象にする）
@@ -783,6 +808,10 @@ def test_discord_api():
         return jsonify({"error": "HTTP {}: {}".format(r.status_code, r.text[:200])}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 200
+
+
+def req_or_form_cost(req):
+    return req.form.get("cost_price") or (req.get_json(silent=True) or {}).get("cost_price", "")
 
 
 # ---------- 外部連携API（Chrome拡張から・トークン認証） ----------
@@ -944,9 +973,10 @@ def external_auto_link_api():
         return jsonify({"error": "urlが必要です"}), 400
 
     # --- 1. 仕入先ページからサイズ展開を抽出 ---
-    variants = []  # [{"size": "M", "color": "", "label": "..."}]
+    variants = []  # [{"size": "M", "color": "", "label": "...", "cost": 15999}]
     page_title = ""
     product_code = ""
+    cost_price = 0  # 仕入値（全SKU共通フォールバック）
     try:
         from checker import fetch_html_auto
         html = fetch_html_auto(url)
@@ -961,11 +991,21 @@ def external_auto_link_api():
             data = _json.loads(m.group(1))
             item = data.get("props", {}).get("pageProps", {}).get("item", {})
             page_title = item.get("name", "")
+            # 仕入値（販売価格）抽出: applicablePrice（全SKU共通）or priceTable
+            cost_price = 0
+            try:
+                cost_price = int(item.get("applicablePrice") or 0)
+                if not cost_price:
+                    pt = item.get("priceTable") or {}
+                    p1 = pt.get("price1") or {}
+                    cost_price = int(p1.get("price") or 0)
+            except Exception:
+                cost_price = 0
             # individualItemList: skuId + optionList(サイズ/カラー) + stock
-            stock_map = {}
             for it in item.get("individualItemList", []):
                 size = ""
                 color = ""
+                sku_price = int(it.get("price") or 0)
                 for opt in it.get("optionList", []):
                     nm = (opt.get("name") or "").lower()
                     if nm in ("サイズ", "size"):
@@ -973,7 +1013,8 @@ def external_auto_link_api():
                     elif nm in ("カラー", "色", "color"):
                         color = opt.get("choiceName", "")
                 if size or color:
-                    variants.append({"size": size, "color": color, "label": (color + " " + size).strip()})
+                    variants.append({"size": size, "color": color, "label": (color + " " + size).strip(),
+                                     "cost": sku_price or cost_price})
             # 品番抽出: skuIdListのキー（例: WF945-JZ8731-M）から
             for ent in item.get("skuIdList", []):
                 if isinstance(ent, dict):
@@ -989,6 +1030,12 @@ def external_auto_link_api():
                 mm = _re.search(r"\b([A-Z]{1,3}\d{4,6}(?:-[A-Z0-9]+)?)\b", page_title)
                 if mm:
                     product_code = mm.group(1)
+        if not variants and m and "yahoo.co.jp" in url.lower():
+            # Yahooだがバリアント抽出できず: 価格だけでも保存
+            try:
+                cost_price = int(item.get("applicablePrice") or 0)
+            except Exception:
+                cost_price = 0
         if not variants:
             # Yahoo以外のサイト: 汎用バリアント抽出（正規表現）
             from checker import fetch_variants_fast
@@ -1108,7 +1155,16 @@ def external_auto_link_api():
     for m_ in matched:
         sid = m_["sku_id"]
         label = (m_["name"] or "")[:60] + (" [" + (m_["color"] + " " + m_["size"]).strip() + "]" if (m_["size"] or m_["color"]) else "")
+        # 仕入値: バリエーション毎の価格 > ページ共通価格
+        v_cost = 0
+        for v in variants:
+            if v.get("size") == m_["size"] and v.get("cost"):
+                v_cost = int(v.get("cost"))
+                break
+        link_cost = v_cost or cost_price
         links[sid] = {"url": url, "name": label, "enabled": True}
+        if link_cost:
+            links[sid]["cost_price"] = link_cost
         if sid in sku_to_product:
             sku_to_product[sid]["url"] = url
             sku_to_product[sid]["enabled"] = True
@@ -1123,13 +1179,132 @@ def external_auto_link_api():
                 "image_url": "",
                 "poizon_sku_id": sid,
             })
-        linked.append({"sku_id": sid, "size": m_["size"], "color": m_["color"], "name": label})
+        linked.append({"sku_id": sid, "size": m_["size"], "color": m_["color"], "name": label,
+                       "cost_price": links[sid].get("cost_price", 0)})
 
     save_poizon_links(links)
     save_json(PRODUCTS_FILE, products)
 
     return jsonify({"ok": True, "linked": linked, "count": len(linked),
                     "page_title": page_title, "product_code": product_code})
+
+
+# ---------- 仕入値更新API ----------
+@app.route("/api/poizon/update_cost", methods=["POST"])
+@login_required
+def poizon_update_cost_api():
+    """仕入値を更新（UIインライン編集用）。"""
+    if not is_logged_in():
+        return jsonify({"error": "ログインが必要です"}), 401
+    sku_id = (request.form.get("sku_id") or "").strip()
+    cost_raw = (request.form.get("cost_price") or "").strip()
+    if not sku_id:
+        return jsonify({"error": "sku_idが必要"}), 400
+    try:
+        cost = int(float(cost_raw))
+    except ValueError:
+        return jsonify({"error": "仕入値は数値で入力"}), 400
+    if cost < 0:
+        return jsonify({"error": "仕入値は0以上"}), 400
+    links = load_poizon_links()
+    if sku_id not in links:
+        return jsonify({"error": "未紐付けのSKUです"}), 400
+    if cost > 0:
+        links[sku_id]["cost_price"] = cost
+    else:
+        links[sku_id].pop("cost_price", None)
+    save_poizon_links(links)
+    return jsonify({"ok": True, "cost_price": cost})
+
+
+# ---------- 自動価格調整API ----------
+@app.route("/api/poizon/auto_adjust", methods=["POST"])
+@login_required
+def poizon_auto_adjust_api():
+    """最小利益額を守りながら市場最低値へ自動調整。
+
+    パラメータ:
+        sku_ids: カンマ区切り（空なら仕入値・市場最低値のある全SKU）
+        dry_run: "1" ならシミュレーションのみ（デフォルト1）
+    ロジック:
+        - 対象: 自価格 > 市場最低値（競争力を失っている）
+        - 新価格 = 市場最低値
+        - ガード: 新価格 - 仕入値 < min_profit ならスキップ
+          （POIZON手数料5%+決済1%+作業1500円も考慮した実質利益で判定可: use_net=1）
+    """
+    if not is_logged_in():
+        return jsonify({"error": "ログインが必要です"}), 401
+
+    sku_ids_raw = (request.form.get("sku_ids") or "").strip()
+    dry_run = (request.form.get("dry_run") or "1") == "1"
+    use_net = (request.form.get("use_net") or "0") == "1"
+
+    config = load_config()
+    min_profit = int(config.get("auto_adjust_min_profit") or 0)
+    app_key = (config.get("poizon_api_id") or "").strip()
+    app_secret = (config.get("poizon_api_key") or "").strip()
+    if not app_key or not app_secret:
+        return jsonify({"error": "POIZON API設定が未設定"}), 400
+
+    # 出品一覧＋市場価格取得
+    from poizon_api import get_active_listings, fetch_market_prices_batch, update_listing_price
+    result = get_active_listings(config)
+    if isinstance(result, dict) and "error" in result:
+        return jsonify({"error": result.get("error", "")}), 200
+    all_sku_ids = [i.get("skuId") for i in result if i.get("skuId")]
+    price_map = fetch_market_prices_batch(all_sku_ids, app_key, app_secret) if all_sku_ids else {}
+    links = load_poizon_links()
+
+    targets_specified = [s.strip() for s in sku_ids_raw.split(",") if s.strip()] if sku_ids_raw else None
+    plan = []
+    for item in result:
+        sku_id = str(item.get("skuId", ""))
+        if targets_specified and sku_id not in targets_specified:
+            continue
+        link = links.get(sku_id, {})
+        cost = int(link.get("cost_price") or 0)
+        market_min = int((price_map.get(sku_id, {}) or {}).get("min_price") or 0)
+        my_price = int(item.get("price") or 0)
+        if not (cost and market_min and my_price and my_price > market_min):
+            continue
+        new_price = market_min
+        # 実質利益（POIZON手数料5%+決済1%+作業1,500円相当を差し引く）
+        if use_net:
+            net_profit = int(new_price * 0.94 - 1500 - cost)
+        else:
+            net_profit = new_price - cost
+        entry = {"sku_id": sku_id, "title": (item.get("spuTitle") or "")[:40],
+                 "current": my_price, "new": new_price, "cost": cost,
+                 "profit": net_profit, "action": "adjust"}
+        if net_profit < min_profit:
+            entry["action"] = "skip_min_profit"
+        plan.append(entry)
+
+    if dry_run:
+        return jsonify({"ok": True, "dry_run": True, "plan": plan,
+                        "adjustable": sum(1 for p in plan if p["action"] == "adjust")})
+
+    # 実行（1秒間隔）
+    results = []
+    for entry in plan:
+        if entry["action"] != "adjust":
+            results.append({**entry, "result": "skipped"})
+            continue
+        item = next((i for i in result if str(i.get("skuId", "")) == entry["sku_id"]), None)
+        if not item:
+            continue
+        import time as _time
+        upd = update_listing_price(app_key, app_secret,
+                                   item.get("sellerBiddingNo", ""),
+                                   int(item.get("globalSkuId", 0)), entry["new"])
+        ok = isinstance(upd, dict) and upd.get("ok")
+        results.append({**entry, "result": "ok" if ok else "fail",
+                        "detail": (upd or {}).get("error", "") if not ok else ""})
+        _time.sleep(1.0)
+
+    return jsonify({"ok": True, "dry_run": False, "results": results,
+                    "adjusted": sum(1 for r in results if r["result"] == "ok"),
+                    "failed": sum(1 for r in results if r["result"] == "fail")})
 
 
 # ---------- main ----------
