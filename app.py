@@ -362,8 +362,11 @@ def update():
     api_base = "https://api.github.com/repos/{}/contents/{}?ref={}".format(repo, "{}", branch)
     raw_base = "https://raw.githubusercontent.com/{}/main/".format(repo)
 
+    jsd_base = "https://cdn.jsdelivr.net/gh/{}/@main/".format(repo)
+
     def _fetch_file(rel):
-        """GitHub API（優先）→ raw（フォールバック）でファイルを取得し、bytesを返す。"""
+        """GitHub API → jsDelivr → raw の順でファイルを取得し、bytesを返す。"""
+        # 1) GitHub API
         req = _urlreq.Request(api_base.format(rel), headers={
             "Accept": "application/vnd.github.raw+json",
             "User-Agent": "helmet-watch-manager-updater",
@@ -373,7 +376,13 @@ def update():
                 return resp.read()
         except Exception:
             pass
-        # フォールバック: raw
+        # 2) jsDelivr CDN
+        try:
+            with _urlreq.urlopen(jsd_base + rel, timeout=30) as resp:
+                return resp.read()
+        except Exception:
+            pass
+        # 3) raw（最終フォールバック）
         with _urlreq.urlopen(raw_base + rel, timeout=30) as resp:
             return resp.read()
 
