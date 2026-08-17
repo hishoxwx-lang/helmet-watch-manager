@@ -348,11 +348,35 @@ def variants_api():
 @app.route("/update", methods=["POST"])
 @login_required
 def update():
-    """GitHub から最新版をDLして自動再起動（ユーザーデータは保持）"""
+    """GitHub から最新版をDLして自動再起動（ユーザーデータは保持）
+
+    raw.githubusercontent.com がレート制限(429)に掛かる場合があるため、
+    GitHub API (contents/base64) を第一経路、raw をフォールバックとする。
+    """
     import urllib.request as _urlreq
     import threading as _th
     import os as _os
-    base = "https://raw.githubusercontent.com/hishoxwx-lang/helmet-watch-manager/main/"
+    import base64 as _b64
+    repo = "hishoxwx-lang/helmet-watch-manager"
+    branch = "main"
+    api_base = "https://api.github.com/repos/{}/contents/{}?ref={}".format(repo, "{}", branch)
+    raw_base = "https://raw.githubusercontent.com/{}/main/".format(repo)
+
+    def _fetch_file(rel):
+        """GitHub API（優先）→ raw（フォールバック）でファイルを取得し、bytesを返す。"""
+        req = _urlreq.Request(api_base.format(rel), headers={
+            "Accept": "application/vnd.github.raw+json",
+            "User-Agent": "helmet-watch-manager-updater",
+        })
+        try:
+            with _urlreq.urlopen(req, timeout=30) as resp:
+                return resp.read()
+        except Exception:
+            pass
+        # フォールバック: raw
+        with _urlreq.urlopen(raw_base + rel, timeout=30) as resp:
+            return resp.read()
+
     targets = [
         "app.py", "checker.py", "poizon_api.py", "requirements.txt",
         "templates/index.html", "templates/login.html",
@@ -365,7 +389,9 @@ def update():
             dest = BASE_DIR / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
             tmp = str(dest) + ".tmp"
-            _urlreq.urlretrieve(base + rel, tmp)
+            data = _fetch_file(rel)
+            with open(tmp, "wb") as f:
+                f.write(data)
             _os.replace(tmp, dest)
         except Exception as e:
             errors.append("{}: {}".format(rel, e))
