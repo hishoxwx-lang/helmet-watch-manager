@@ -1050,21 +1050,37 @@ def external_auto_link_api():
                 if size or color:
                     variants.append({"size": size, "color": color, "label": (color + " " + size).strip(),
                                      "cost": sku_price or cost_price})
-            # 品番抽出: skuIdListのキー（例: WF945-JZ8731-M）から
+            # 品番抽出: skuIdListのキー（例: WF945-JZ8731-M / 3MG10064852-M / CY206-QBBK）から
+            # パターン: 品番本体 = 英字/数字混在トークン（末尾セグメントのハイフン+サイズ部分は除外）
             for ent in item.get("skuIdList", []):
                 if isinstance(ent, dict):
                     for k in ent.keys():
-                        mm = _re.match(r"^([A-Z0-9]+-[A-Z0-9]+)", k)
-                        if mm:
-                            product_code = mm.group(1)
+                        parts = k.upper().split("-")
+                        # 末尾セグメントがサイズ表記（S/M/L/XXL/数字のみ）なら品番から除去
+                        while len(parts) > 1 and re.fullmatch(r"(X{0,2}[SML]|\d{1,3}(?:\.\d)?CM?|US\d+)", parts[-1]):
+                            parts.pop()
+                        cand = "-".join(parts)
+                        # 品番として妥当: 6文字以上で英字と数字を両方含む
+                        if len(cand) >= 6 and re.search(r"[A-Z]", cand) and re.search(r"\d", cand):
+                            product_code = cand
                             break
                 if product_code:
                     break
             if not product_code:
-                # ページタイトルやheadlineから品番抽出（例: JZ8731）
+                # ページタイトルやheadlineから品番抽出（例: JZ8731 / 3MG10064852）
+                # パターン: 英字始まり品番（JZ8731等）or 数字始まり品番（3MG10064852等）
                 mm = _re.search(r"\b([A-Z]{1,3}\d{4,6}(?:-[A-Z0-9]+)?)\b", page_title)
+                if not mm:
+                    mm = _re.search(r"\b(\d{1,3}[A-Z]{1,4}\d{3,8}(?:-[A-Z0-9]+)?)\b", page_title, _re.I)
+                    if mm:
+                        product_code = mm.group(1).upper()
                 if mm:
                     product_code = mm.group(1)
+        if not product_code:
+            # URL末尾から品番抽出フォールバック（例: /wf945-jz8731.html）
+            mm = _re.search(r"/([A-Za-z0-9]+-[A-Za-z0-9]+)(?:-[A-Za-z0-9]+)?\.html", url)
+            if mm:
+                product_code = mm.group(1).upper()
         if not variants and m and "yahoo.co.jp" in url.lower():
             # Yahooだがバリアント抽出できず: 価格だけでも保存
             try:
@@ -1123,6 +1139,67 @@ def external_auto_link_api():
     def _norm_size(s):
         return str(s or "").strip().upper().replace("サイズ", "").replace("SIZE", "").replace("CM", "").replace("ｃｍ", "").replace(".", "").replace(" ", "")
 
+    # US/EU表記対応: 仕入先ページはUS表記（US7(25cm)等）、POIZONはEU表記（40等）が多い。
+    # 生のサイズ文字列から US/CM/EU トークンを抽出し、EU換算の集合で照合する。
+    _US_TO_EU = {
+        "5": "37.5", "5.5": "38", "6": "38.5", "6.5": "39", "7": "40", "7.5": "40.5",
+        "8": "41", "8.5": "42", "9": "42.5", "9.5": "43", "10": "44", "10.5": "44.5",
+        "11": "45", "11.5": "45.5", "12": "46", "12.5": "47", "13": "48",
+    }
+    _CM_TO_EU = {
+        "22.5": "37.5", "23": "38", "23.5": "38.5", "24": "39", "24.5": "40",
+        "25": "40.5", "25.5": "41", "26": "42", "26.5": "42.5", "27": "43",
+        "27.5": "44", "28": "44.5", "28.5": "45", "29": "45.5", "29.5": "46", "30": "47",
+    }
+
+    def _parse_size_tokens(raw):
+        """生のサイズ文字列から (us, cm, eu) を抽出。"""
+        s = str(raw or "").strip().upper().replace("サイズ", "").replace("SIZE", "").replace(" ", "")
+        us, cm, eu = "", "", ""
+        mm = re.search(r"US\.?(\d{1,2}(?:\.\d)?)", s)
+        if mm:
+            us = mm.group(1)
+        mm = re.search(r"(\d{2}(?:\.\d)?)\s*(?:CM|ｃｍ)", s)
+        if mm:
+            cm = mm.group(1)
+        mm = re.match(r"^(\d{1,2}(?:\.\d)?)(?:CM)?$", s) or re.match(r"^EU(\d{1,2}(?:\.\d)?)", s)
+        if mm:
+            eu = mm.group(1)
+        return us, cm, eu
+
+    def _size_equivalent(a, b):
+        """サイズ照合（US/CM/EU/SML表記の違いを吸収）。生のサイズ文字列を受け取る。"""
+        sa = str(a or "").strip().upper()
+        sb = str(b or "").strip().upper()
+        if not sa or not sb:
+            return False
+        na = sa.replace("サイズ", "").replace("SIZE", "").replace(" ", "").replace(".", "")
+        nb = sb.replace("サイズ", "").replace("SIZE", "").replace(" ", "").replace(".", "")
+        # 文字列表記（S/M/L/XL等）は直接比較
+        if not any(ch.isdigit() for ch in na) and not any(ch.isdigit() for ch in nb):
+            return na == nb
+        if not any(ch.isdigit() for ch in na) or not any(ch.isdigit() for ch in nb):
+            return False
+        a_us, a_cm, a_eu = _parse_size_tokens(a)
+        b_us, b_cm, b_eu = _parse_size_tokens(b)
+
+        def _to_eu_set(us, cm, eu, raw):
+            s = set()
+            if eu:
+                s.add(eu)
+            if us and us in _US_TO_EU:
+                s.add(_US_TO_EU[us])
+            if cm and cm in _CM_TO_EU:
+                s.add(_CM_TO_EU[cm])
+            mm = re.match(r"^(\d{2}(?:\.\d)?)$", str(raw or "").strip().upper().replace("サイズ", "").replace("SIZE", "").replace(" ", ""))
+            if mm and not us:
+                s.add(mm.group(1))
+            return s
+
+        ea = _to_eu_set(a_us, a_cm, a_eu, a)
+        eb = _to_eu_set(b_us, b_cm, b_eu, b)
+        return bool(ea & eb)
+
     matched = []
     for item in result:
         sku_id = str(item.get("skuId", ""))
@@ -1152,10 +1229,10 @@ def external_auto_link_api():
         if article_match:
             if variants:
                 for v in variants:
-                    vs = _norm_size(v.get("size"))
-                    ps = _norm_size(size)
-                    # サイズ一致（バリアントにサイズがあってPOIZON側にもサイズがある場合）
-                    if vs and vs == ps:
+                    vs = str(v.get("size") or "").strip()
+                    ps = str(size or "").strip()
+                    # サイズ一致（US/CM/EU表記の違いは _size_equivalent で吸収）
+                    if vs and ps and _size_equivalent(vs, ps):
                         hit = True
                         break
                     # バリアントにサイズ情報なし or POIZON側にサイズなし → 品番一致で全SKU対象
@@ -1171,8 +1248,13 @@ def external_auto_link_api():
                             "name": spu_title, "article": item_article})
 
     if not matched:
+        hint = ""
+        if not product_code:
+            hint = " ※仕入先ページから品番を検出できませんでした。Yahoo!/楽天の商品ページURLかご確認ください"
+        elif variants:
+            hint = " ※品番{}は検出しましたが、サイズ展開がPOIZON出品と一致しません（US/EU表記差異の可能性）".format(product_code)
         return jsonify({"ok": False,
-                        "error": "一致するPOIZON出品が見つかりませんでした",
+                        "error": "一致するPOIZON出品が見つかりませんでした{}".format(hint),
                         "page_title": page_title, "product_code": product_code,
                         "variants": [v.get("label") for v in variants],
                         "poizon_count": len(result)}), 200
