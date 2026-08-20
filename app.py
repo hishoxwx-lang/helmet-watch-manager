@@ -1050,22 +1050,38 @@ def external_auto_link_api():
                 if size or color:
                     variants.append({"size": size, "color": color, "label": (color + " " + size).strip(),
                                      "cost": sku_price or cost_price})
-            # 品番抽出: skuIdListのキー（例: WF945-JZ8731-M / 3MG10064852-M / CY206-QBBK）から
-            # パターン: 品番本体 = 英字/数字混在トークン（末尾セグメントのハイフン+サイズ部分は除外）
-            for ent in item.get("skuIdList", []):
-                if isinstance(ent, dict):
-                    for k in ent.keys():
-                        parts = k.upper().split("-")
-                        # 末尾セグメントがサイズ表記（S/M/L/XXL/数字のみ）なら品番から除去
-                        while len(parts) > 1 and re.fullmatch(r"(X{0,2}[SML]|\d{1,3}(?:\.\d)?CM?|US\d+)", parts[-1]):
-                            parts.pop()
-                        cand = "-".join(parts)
-                        # 品番として妥当: 6文字以上で英字と数字を両方含む
-                        if len(cand) >= 6 and re.search(r"[A-Z]", cand) and re.search(r"\d", cand):
-                            product_code = cand
-                            break
-                if product_code:
+            # 品番抽出（優先順位）:
+            # 1. sellerManagedItemId / srid（店舗管理ID = ほぼ品番そのもの・最も確実）
+            #    例: 3MG10051043 / wf945-jz8731
+            # 2. skuIdListのキー（例: WF945-JZ8731-M / 3MG10051043BLKBLK250）
+            for _id_field in ("sellerManagedItemId", "srid"):
+                _idv = str(item.get(_id_field) or "").strip().upper()
+                if _idv and re.search(r"[A-Z]", _idv) and re.search(r"\d", _idv) and len(_idv) >= 6:
+                    product_code = _idv
                     break
+            if not product_code:
+                # skuIdList: ハイフン区切り品番（末尾サイズ除去）or 連結形式（英数字境界でカラーコード分離）
+                for ent in item.get("skuIdList", []):
+                    if isinstance(ent, dict):
+                        for k in ent.keys():
+                            ku = k.upper()
+                            parts = ku.split("-")
+                            # 末尾セグメントがサイズ表記（S/M/L/XXL/数字のみ）なら品番から除去
+                            while len(parts) > 1 and re.fullmatch(r"(X{0,2}[SML]|\d{1,3}(?:\.\d)?CM?|US\d+)", parts[-1]):
+                                parts.pop()
+                            cand = "-".join(parts)
+                            if len(parts) == 1:
+                                # ハイフンなし連結形式（例: 3MG10051043BLKBLK250）
+                                # 品番本体の末尾は数字（3MG10051043）で、その後に英字カラー+サイズが連結される。
+                                mm2 = re.match(r"^(\d{0,3}[A-Z]{1,4}\d{4,10})", ku)
+                                if mm2 and len(mm2.group(1)) >= 8:
+                                    cand = mm2.group(1)
+                            # 品番として妥当: 6文字以上で英字と数字を両方含む
+                            if len(cand) >= 6 and re.search(r"[A-Z]", cand) and re.search(r"\d", cand):
+                                product_code = cand
+                                break
+                    if product_code:
+                        break
             if not product_code:
                 # ページタイトルやheadlineから品番抽出（例: JZ8731 / 3MG10064852）
                 # パターン: 英字始まり品番（JZ8731等）or 数字始まり品番（3MG10064852等）
@@ -1162,6 +1178,8 @@ def external_auto_link_api():
         mm = re.search(r"(\d{2}(?:\.\d)?)\s*(?:CM|ｃｍ)", s)
         if mm:
             cm = mm.group(1)
+            if cm.endswith(".0"):
+                cm = cm[:-2]  # 25.0 → 25（表キー正規化）
         mm = re.match(r"^(\d{1,2}(?:\.\d)?)(?:CM)?$", s) or re.match(r"^EU(\d{1,2}(?:\.\d)?)", s)
         if mm:
             eu = mm.group(1)
