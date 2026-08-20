@@ -363,9 +363,21 @@ def update():
     raw_base = "https://raw.githubusercontent.com/{}/main/".format(repo)
 
     jsd_base = "https://cdn.jsdelivr.net/gh/{}/@main/".format(repo)
+    # 最新タグ（jsDelivrの@mainキャッシュは最大12h遅延するがタグは即時）
+    jsd_tag = None
+    try:
+        req_t = _urlreq.Request("https://api.github.com/repos/{}/tags?per_page=1".format(repo),
+                                headers={"User-Agent": "helmet-watch-manager-updater"})
+        import json as _json_t
+        with _urlreq.urlopen(req_t, timeout=15) as resp:
+            _tags = _json_t.loads(resp.read().decode("utf-8"))
+        if _tags:
+            jsd_tag = "https://cdn.jsdelivr.net/gh/{}/@{}/".format(repo, _tags[0]["name"])
+    except Exception:
+        jsd_tag = None
 
     def _fetch_file(rel):
-        """GitHub API → jsDelivr → raw の順でファイルを取得し、bytesを返す。"""
+        """GitHub API → jsDelivr(タグ) → jsDelivr(main) → raw の順で取得。"""
         # 1) GitHub API
         req = _urlreq.Request(api_base.format(rel), headers={
             "Accept": "application/vnd.github.raw+json",
@@ -376,13 +388,20 @@ def update():
                 return resp.read()
         except Exception:
             pass
-        # 2) jsDelivr CDN
+        # 2) jsDelivr CDN（最新タグ・即時配信）
+        if jsd_tag:
+            try:
+                with _urlreq.urlopen(jsd_tag + rel, timeout=30) as resp:
+                    return resp.read()
+            except Exception:
+                pass
+        # 3) jsDelivr CDN（main・最大12hキャッシュ遅延あり）
         try:
             with _urlreq.urlopen(jsd_base + rel, timeout=30) as resp:
                 return resp.read()
         except Exception:
             pass
-        # 3) raw（最終フォールバック）
+        # 4) raw（最終フォールバック）
         with _urlreq.urlopen(raw_base + rel, timeout=30) as resp:
             return resp.read()
 
