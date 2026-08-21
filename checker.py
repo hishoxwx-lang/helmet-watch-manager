@@ -665,6 +665,31 @@ def check_generic(url, product, config):
     size_pattern = product.get("size_pattern", "")
     stock_keyword = product.get("stock_keyword", "")
 
+    # 1.4 Coach Outlet: JSON-LDのavailabilityでカラー別在庫判定
+    if "coachoutlet.com" in url.lower():
+        m_sku = re.search(r'productID[^"]*"([^"]+)","sku"', html)  # 最初のSKU（ページ既定色）
+        # size_patternにカラーコード（例: QBDEB）が指定されている場合、そのSKUのavailabilityを探す
+        want_color = (product.get("size_pattern") or "").strip().upper()
+        if want_color:
+            for mm in re.finditer(
+                    r'"productID":"([^"]+)"(.{0,3000}?)"availability":"https://schema\.org/(\w+)"', html, re.S):
+                sku_raw = mm.group(1).upper()
+                if want_color.replace("/", "") in sku_raw.replace("/", "").replace(" ", ""):
+                    avail = mm.group(3)
+                    if avail in ("InStock", "LimitedAvailability", "PreOrder"):
+                        return IN_STOCK, "{}: 在庫あり（公式）".format(sku_raw)
+                    return SOLD_OUT, "{}: 在庫切れ（公式）".format(sku_raw)
+            return UNKNOWN, "カラー{}の在庫情報が見つかりません".format(want_color)
+        # size_patternなし: ページの add-to-cart ボタン文言で判定
+        m_btn = re.search(r'id="add-to-cart"[^>]*>([^<]{1,30})', html)
+        if m_btn:
+            btn = m_btn.group(1).strip()
+            if btn in ("在庫切れ", "品切れ", "売切れ"):
+                return SOLD_OUT, "{}（公式ボタン）".format(btn)
+            if "カート" in btn or "購入" in btn or "追加" in btn:
+                return IN_STOCK, "{}（公式ボタン）".format(btn)
+        return UNKNOWN, "Coach Outlet: 判定材料なし（size_patternにカラーコード推奨）"
+
     # 1.5 アクセス保護ページ検知（Akamai等の403ページをGLMに投げない）
     #    「Access denied」等が含まれる場合、商品ページではなくブロックページ。
     #    ※ブロック文言はページ末尾付近にあることもあるため全文スキャン（正規表現1回・軽量）

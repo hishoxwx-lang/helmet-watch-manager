@@ -1112,9 +1112,35 @@ def external_auto_link_api():
                         product_code = mm.group(1).upper()
                 if mm:
                     product_code = mm.group(1)
+        if not product_code and "coachoutlet.com" in url.lower():
+            # Coach Outlet（Akamai保護・fetch_html_autoのcurl_cffiで通る）:
+            # - 品番: masterId（例: C9875）
+            # - SKU: JSON-LD productID "C9875 QB/BK"（品番+カラーコード）×availability×price
+            # - サイズなし（Bag）→ colorをvariantに入れてカラー照合
+            try:
+                _mst = _re.search(r'masterId\\":\\"([^"\\]+)', html) or _re.search(r'"masterId":"([^"]+)"', html)
+                if _mst:
+                    product_code = _mst.group(1).upper()
+                for mm3 in _re.finditer(
+                        r'"productID":"([^"]+)","sku":"[^"]+"(.{0,3000}?)"availability":"https://schema\.org/(\w+)"(.{0,400}?)"price":([\d.]+)',
+                        html, _re.S):
+                    _sku_raw, _avail, _price = mm3.group(1), mm3.group(3), int(float(mm3.group(5)))
+                    _color_code = ""
+                    if _sku_raw.upper().startswith(product_code):
+                        _color_code = _sku_raw[len(product_code):].strip().replace(" ", "")
+                    if not _color_code:
+                        continue
+                    _in_stock = _avail in ("InStock", "LimitedAvailability", "PreOrder")
+                    variants.append({
+                        "size": "", "color": _color_code,
+                        "label": _color_code + ("（在庫あり）" if _in_stock else "（在庫切れ）"),
+                        "cost": _price, "in_stock": _in_stock, "sku_key": _sku_raw,
+                    })
+            except Exception:
+                pass
         if not product_code:
-            # URL末尾から品番抽出フォールバック（例: /wf945-jz8731.html）
-            mm = _re.search(r"/([A-Za-z0-9]+-[A-Za-z0-9]+)(?:-[A-Za-z0-9]+)?\.html", url)
+            # URL末尾から品番抽出フォールバック（例: /wf945-jz8731.html / /C9875.html）
+            mm = _re.search(r"/([A-Za-z0-9]+-[A-Za-z0-9]+|[A-Z]{1,3}\d{3,6})(?:-[A-Za-z0-9]+)?\.html", url)
             if mm:
                 product_code = mm.group(1).upper()
         if not variants and m and "yahoo.co.jp" in url.lower():
@@ -1149,6 +1175,10 @@ def external_auto_link_api():
     app_secret = config.get("poizon_api_key", "")
     from poizon_api import fetch_poizon_sku_info_batch
     sku_info_map = fetch_poizon_sku_info_batch(all_sku_ids, app_key, app_secret) if all_sku_ids else {}
+
+    def _url_path_of(u):
+        mm = _re2.search(r"https?://[^/]+(/[^?]*)", u or "")
+        return mm.group(1) if mm else ""
 
     def _size_of(item):
         sku_prop_str = item.get("skuSaleProp", "[]")
@@ -1265,10 +1295,31 @@ def external_auto_link_api():
             pc_u == item_article or (pc_tokens & ia_tokens)
         ))
         if article_match:
-            if variants:
+            # カラーコード型バリアント（Coach等）: 全バリアントがカラーのみ持つ場合、
+            # カラー一致を必須条件にする（品番+カラーの両方一致でのみヒット）
+            color_only_variants = [v for v in variants if str(v.get("color") or "").strip() and not str(v.get("size") or "").strip()]
+            is_color_only = bool(color_only_variants) and len(color_only_variants) == len(variants)
+            if is_color_only:
+                for v in variants:
+                    vc = str(v.get("color") or "").strip().upper()
+                    item_color = (color or "").upper()
+                    if (item_article and vc in item_article) or (item_color and vc in item_color):
+                        hit = True
+                        # size_patternにカラーコードを保存（checkerのカラー別在庫判定で使用）
+                        if not size and not v.get("size"):
+                            size = vc
+                        break
+            elif variants:
                 for v in variants:
                     vs = str(v.get("size") or "").strip()
                     ps = str(size or "").strip()
+                    vc = str(v.get("color") or "").strip().upper()
+                    # カラー一致（サイズ+カラー両方ある商品）: カラーコードがPOIZON品番/表示に含まれるか
+                    if vc and not vs:
+                        item_color = (color or "").upper()
+                        if vc in item_article or (item_color and vc in item_color):
+                            hit = True
+                            break
                     # サイズ一致（US/CM/EU表記の違いは _size_equivalent で吸収）
                     if vs and ps and _size_equivalent(vs, ps):
                         hit = True
@@ -1311,11 +1362,26 @@ def external_auto_link_api():
         sid = m_["sku_id"]
         label = (m_["name"] or "")[:60] + (" [" + (m_["color"] + " " + m_["size"]).strip() + "]" if (m_["size"] or m_["color"]) else "")
         # 仕入値: バリエーション毎の価格 > ページ共通価格
+        # （サイズ一致 or カラーコード一致のバリアント価格を優先）
         v_cost = 0
         for v in variants:
-            if v.get("size") == m_["size"] and v.get("cost"):
+            v_size = str(v.get("size") or "").strip().upper()
+            v_color = str(v.get("color") or "").strip().upper()
+            m_size = str(m_.get("size") or "").strip().upper()
+            m_color = str(m_.get("color") or "").strip().upper()
+            if ((v_size and v_size == m_size) or (v_color and v_color and v_color == m_color)) and v.get("cost"):
                 v_cost = int(v.get("cost"))
                 break
+        if not v_cost:
+            # カラーコード照合: バリアントのカラーコードがラベル/品番に含まれるか
+            # （POIZON表示色"Dark Blue" ↔ Coach"QBDEB"はコードがSKU/品番側に残る）
+            label_u = (m_.get("name") or "").upper()
+            article_u = str(m_.get("article") or "").upper()
+            for v in variants:
+                vc = str(v.get("color") or "").strip().upper()
+                if vc and v.get("cost") and (vc in label_u or (article_u and vc in article_u)):
+                    v_cost = int(v.get("cost"))
+                    break
         link_cost = v_cost or cost_price
         links[sid] = {"url": url, "name": label, "enabled": True}
         if link_cost:
