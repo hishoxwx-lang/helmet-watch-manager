@@ -327,6 +327,7 @@
       document.getElementById('clearSelBtn').addEventListener('click', clearSelection);
       document.getElementById('unlinkBtn').addEventListener('click', unlinkItem);
       document.getElementById('linkSaveBtn').addEventListener('click', function() {
+        currentPage = 1; // #9 検索時は1頁へ
         // フォーム送信
         var fd = new FormData();
         fd.append('sku_id', document.getElementById('linkSkuId').value);
@@ -514,7 +515,6 @@
       toolbar.style.display = '';
       var search = (document.getElementById('searchBox').value || '').toLowerCase();
       var filtered = allListings;
-      currentPage = 1;
       if (activeBrand !== 'ALL') filtered = filtered.filter(function(l) { return (l.brand || 'その他') === activeBrand; });
       if (search) {
         filtered = filtered.filter(function(l) {
