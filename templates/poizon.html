@@ -82,6 +82,7 @@
   .cost-editable:hover{color:var(--accent);border-color:var(--accent)}
   .profit-pos{color:var(--success);font-weight:600}
   .profit-neg{color:var(--danger);font-weight:600}
+  .profit-warn{color:#b8860b;font-weight:600}
   .cost-input{width:75px;padding:2px 4px;border:1px solid var(--accent);border-radius:3px;font-size:12px;font-weight:600;text-align:right;font-variant-numeric:tabular-nums}
   .price-editable{cursor:pointer;border-bottom:1px dashed var(--text-muted)}
   .price-editable:hover{color:var(--accent);border-color:var(--accent)}
@@ -299,6 +300,7 @@
     var sortColumn = null;
     var sortDirection = null;
     var selectedSkus = new Set();
+    var currentPage = 1; // #9 ページング
     var autoRefreshTimer = null;
 
     // URL定義（Jinja2から注入）
@@ -448,6 +450,7 @@
 
     // === B: ソート ===
     function sortByColumn(col) {
+      currentPage = 1; // #9
       if (sortColumn === col) {
         if (sortDirection === 'asc') sortDirection = 'desc';
         else if (sortDirection === 'desc') { sortDirection = null; sortColumn = null; }
@@ -511,6 +514,7 @@
       toolbar.style.display = '';
       var search = (document.getElementById('searchBox').value || '').toLowerCase();
       var filtered = allListings;
+      currentPage = 1;
       if (activeBrand !== 'ALL') filtered = filtered.filter(function(l) { return (l.brand || 'その他') === activeBrand; });
       if (search) {
         filtered = filtered.filter(function(l) {
@@ -523,8 +527,14 @@
         });
       }
       filtered = getSorted(filtered);
+      // #9 クライアントページング（50件/頁）
+      var PAGE_SIZE = 50;
+      var totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+      if (currentPage > totalPages) currentPage = 1;
+      var pageStart = (currentPage - 1) * PAGE_SIZE;
+      var pageItems = filtered.slice(pageStart, pageStart + PAGE_SIZE);
       document.getElementById('resultCount').textContent =
-        filtered.length === allListings.length ? allListings.length + ' 件' : filtered.length + ' / ' + allListings.length + ' 件';
+        filtered.length === allListings.length ? allListings.length + ' 件 (' + (pageStart+1) + '-' + (pageStart+pageItems.length) + '件目)' : filtered.length + ' / ' + allListings.length + ' 件 (' + (pageStart+1) + '-' + (pageStart+pageItems.length) + '件目)';
       if (!filtered.length) {
         area.innerHTML = '<div class="card empty-state"><div class="icon">🔍</div><div class="msg">該当する出品がありません。</div></div>';
         return;
@@ -539,15 +549,15 @@
         '<th class="col-price sortable ' + sortCls('price') + '" style="text-align:right" data-col="price">価格 ' + sortIcon('price') + '</th>' +
         '<th class="col-cart sortable ' + sortCls('cart') + '" style="text-align:right" data-col="cart">カート価格 ' + sortIcon('cart') + '</th>' +
         '<th class="col-cost sortable ' + sortCls('cost') + '" style="text-align:right" data-col="cost">仕入値 ' + sortIcon('cost') + '</th>' +
-        '<th class="col-profit sortable ' + sortCls('profit') + '" style="text-align:right" data-col="profit">利益 ' + sortIcon('profit') + '</th>' +
+        '<th class="col-profit sortable ' + sortCls('profit') + '" style="text-align:right" data-col="profit">実質利益 ' + sortIcon('profit') + '</th>' +
         '<th class="col-market sortable ' + sortCls('market') + '" style="text-align:right" data-col="market">市場最低値 ' + sortIcon('market') + '</th>' +
         '<th class="col-stock sortable ' + sortCls('stock') + '" data-col="stock">仕入先在庫 ' + sortIcon('stock') + '</th>' +
         '<th class="col-status">紐付け</th>' +
         '<th class="col-action" style="text-align:right">アクション</th>' +
         '</tr></thead><tbody>';
 
-      for (var i = 0; i < filtered.length; i++) {
-        var l = filtered[i];
+      for (var i = 0; i < pageItems.length; i++) {
+        var l = pageItems[i];
         var price = l.price ? Number(l.price).toLocaleString() : '';
         var currency = l.currency || '';
         var title = l.title || '(商品名無し)';
@@ -586,10 +596,16 @@
         } else {
           html += '<td class="col-cost">—</td>';
         }
-        // 利益
-        if (l.profit) {
-          var pcls = l.profit >= 0 ? 'profit-pos' : 'profit-neg';
-          html += '<td class="col-profit"><span class="' + pcls + '">' + (l.profit > 0 ? '+' : '') + '¥' + Number(l.profit).toLocaleString() + '</span></td>';
+        // 実質利益（売価×0.94−1500−仕入値）+ 利益率
+        if (l.cost_price && l.price) {
+          var net = Math.round(l.price * 0.94 - 1500 - l.cost_price);
+          var rate = l.price ? (net / l.price * 100) : 0;
+          var pcls = net < 0 ? 'profit-neg' : (rate < 15 ? 'profit-warn' : 'profit-pos');
+          html += '<td class="col-profit"><span class="' + pcls + '">' + (net > 0 ? '+' : '') + '¥' + Number(net).toLocaleString() + '</span>';
+          html += '<div style="font-size:10px;color:var(--text-muted)">' + rate.toFixed(1) + '%</div></td>';
+        } else if (l.profit) {
+          var pcls2 = l.profit >= 0 ? 'profit-pos' : 'profit-neg';
+          html += '<td class="col-profit"><span class="' + pcls2 + '">' + (l.profit > 0 ? '+' : '') + '¥' + Number(l.profit).toLocaleString() + '</span></td>';
         } else {
           html += '<td class="col-profit">—</td>';
         }
@@ -613,6 +629,7 @@
         html += '<td class="col-status">';
         html += l.linked ? '<span class="listing-badge linked">🔗 紐付け済</span>' : '<span class="listing-badge unlinked">未紐付け</span>';
         if (l.monitoring) html += '<span class="listing-badge monitoring">📡 監視中</span>';
+        if (l.check_interval > 0) html += '<span class="listing-badge" style="background:var(--surface);color:var(--text-muted)">⏱' + escapeHtml(String(l.check_interval)) + '分</span>';
         html += '</td>';
         // アクション
         html += '<td class="col-action">';
@@ -628,7 +645,38 @@
       }
 
       html += '</tbody></table></div></div>';
+
+      // #9 ページナビゲーション
+      if (totalPages > 1) {
+        html += '<div style="display:flex;gap:4px;justify-content:center;margin-top:12px;flex-wrap:wrap">';
+        function pageBtn(label, page, opts) {
+          opts = opts || {};
+          var dis = opts.disabled ? ' disabled' : '';
+          var cls = opts.active ? ' btn-primary' : ' btn-outline';
+          return '<button class="btn' + cls + ' btn-sm page-btn" data-page="' + page + '"' + dis + '>' + label + '</button>';
+        }
+        html += pageBtn('‹ 前', currentPage - 1, {disabled: currentPage <= 1});
+        var shown = [];
+        for (var pg = 1; pg <= totalPages; pg++) {
+          if (pg === 1 || pg === totalPages || Math.abs(pg - currentPage) <= 1) shown.push(pg);
+          else if (shown[shown.length - 1] !== '…') shown.push('…');
+        }
+        for (var si = 0; si < shown.length; si++) {
+          if (shown[si] === '…') html += '<span style="align-self:center;color:var(--text-muted)">…</span>';
+          else html += pageBtn(String(shown[si]), shown[si], {active: shown[si] === currentPage});
+        }
+        html += pageBtn('次 ›', currentPage + 1, {disabled: currentPage >= totalPages});
+        html += '</div>';
+      }
       area.innerHTML = html;
+
+      // ページボタンイベント委譲
+      area.querySelectorAll('.page-btn').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var pg = parseInt(btn.dataset.page);
+          if (pg >= 1 && !btn.disabled) { currentPage = pg; renderListings(); }
+        });
+      });
     }
 
     function updateStats() {

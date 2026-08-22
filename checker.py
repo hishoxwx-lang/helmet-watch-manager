@@ -18,6 +18,7 @@ import json
 import re
 import sys
 import datetime
+import time
 from pathlib import Path
 
 # 標準出力をUTF-8に（Windowsで親プロセスがUTF-8で受信するため）
@@ -29,6 +30,7 @@ except Exception:
 
 try:
     import requests
+    import requests as _rq_mod
 except ImportError:
     print("[ERROR] 'requests' is not installed. Run: pip install requests", file=sys.stderr)
     sys.exit(1)
@@ -431,27 +433,56 @@ def check_rakuten(url, size):
     return IN_STOCK, detail
 
 
+def _is_transient_error(exc):
+    """一時的なネットワークエラーか（リトライ対象）。4xxクライアントエラーは対象外。"""
+    import requests as _rq
+    if isinstance(exc, _rq.exceptions.HTTPError):
+        resp = getattr(exc, "response", None)
+        status = getattr(resp, "status_code", 0)
+        return status >= 500 or status == 429
+    if isinstance(exc, (_rq.exceptions.Timeout, _rq.exceptions.ConnectionError,
+                        ConnectionError)):
+        return True
+    msg = str(exc)
+    return "timed out" in msg.lower()
+
+
 def fetch_html_auto(url):
-    """HTML を取得する。requests → curl_cffi の順でフォールバック。
+    """HTML を取得する。requests → curl_cffi → (一時エラー時)全体リトライ1回。
 
     requests が弾かれた場合(Akamai/Cloudflare等)、curl_cffi の
-    impersonate=chrome で再試行する。
+    impersonate=chrome で再試行する。一時的なネットワークエラー
+    （Timeout/ConnectionError/5xx/429）のみ3秒待って全体を1回だけ再試行。
+    403等の4xxはブロックなのでリトライせず即raise。
     """
-    # 1st: 通常の requests
-    try:
-        return fetch_html(url)
-    except Exception as req_err:
-        print("    -> requests failed, trying curl_cffi...")
-        # 2nd: curl_cffi (TLS指紋偽装)
+    last_err = None
+    max_attempts = 2
+    retried = False
+    for attempt in range(max_attempts):
         try:
-            from curl_cffi import requests as cffi_requests
-            r = cffi_requests.get(url, impersonate="chrome", timeout=30)
-            r.raise_for_status()
-            return r.text
-        except ImportError:
-            raise req_err  # curl_cffi未インストールなら元のエラー
-        except Exception:
-            raise
+            return fetch_html(url)
+        except Exception as req_err:
+            print("    -> requests failed, trying curl_cffi...")
+            try:
+                from curl_cffi import requests as cffi_requests
+                r = cffi_requests.get(url, impersonate="chrome", timeout=30)
+                r.raise_for_status()
+                return r.text
+            except ImportError:
+                raise req_err  # curl_cffi未インストールなら元のエラー
+            except Exception as cffi_err:
+                # curl_cffi側（ブラウザ偽装）でも4xx＝本物のブロック→即raise
+                status2 = getattr(getattr(cffi_err, "response", None), "status_code", 0) or 0
+                if 400 <= status2 < 500 and status2 != 429:
+                    raise
+                last_err = cffi_err
+
+    # 一時的エラーのみ・1回だけ全体リトライ（4xxブロックはリトライしない）
+    if not retried and last_err is not None and _is_transient_error(last_err):
+        print("    -> retrying once after transient error...")
+        time.sleep(3)
+        return fetch_html_auto(url)
+    raise last_err
 
 
 # ==================== 汎用在庫判定エンジン ====================
@@ -645,6 +676,57 @@ def check_by_glm(html, product, glm_api_key):
         return None, "GLM API通信エラー: {}".format(e)
 
 
+def _check_json_ld(html, size_pattern=""):
+    """schema.org JSON-LD の availability で在庫判定（汎用）。
+
+    戻り値: (state or None, detail) — 判定材料がなければ (None, "")
+    対象: <script type="application/ld+json"> 内の Product / Offer、
+          および Next.js等に埋め込まれたエスケープ済みavailability文字列。
+
+    size_pattern指定時: sku/name/color に size_pattern を含むSKUを優先判定。
+    size_patternなし: 全Offerが同一状態ならその状態、混在ならUNKNOWN。
+    """
+    avail_map = {}  # [(sku_or_context, is_in_stock)]
+    for mm in re.finditer(
+            r'"productID"\s*:\s*"([^"]+)"(.{0,3000}?)'
+            r'"availability"\s*:\s*"https://schema\.org/(\w+)"', html, re.S):
+        sku_raw = mm.group(1).strip()
+        avail = mm.group(3)
+        avail_map[sku_raw] = avail in ("InStock", "LimitedAvailability", "PreOrder")
+    if not avail_map:
+        # エスケープ済み形式（RSC埋め込み）
+        for mm in re.finditer(
+                r'productID\\":\\"([^"\\]+)\\(.{0,3000}?)'
+                r'availability\\":\\"https://schema\.org/(\w+)', html, re.S):
+            sku_raw = mm.group(1).strip()
+            avail = mm.group(3)
+            avail_map[sku_raw] = avail in ("InStock", "LimitedAvailability", "PreOrder")
+    if not avail_map:
+        return None, ""
+
+    want = (size_pattern or "").strip().upper()
+    if want:
+        # 該当SKU優先
+        for sku_raw, in_stock in avail_map.items():
+            norm_sku = sku_raw.upper().replace("/", "").replace(" ", "")
+            if want.replace("/", "") in norm_sku:
+                if in_stock:
+                    return IN_STOCK, "{}: 在庫あり（公式JSON-LD）".format(sku_raw)
+                return SOLD_OUT, "{}: 在庫切れ（公式JSON-LD）".format(sku_raw)
+        return None, ""  # 該当SKUなし→後段判定へ
+
+    # size_patternなし: 全体一致ならその状態
+    states = set(avail_map.values())
+    total = len(avail_map)
+    if len(states) == 1:
+        in_stock = states.pop()
+        if in_stock:
+            return IN_STOCK, "全{}SKU在庫あり（公式JSON-LD）".format(total)
+        return SOLD_OUT, "全{}SKU在庫切れ（公式JSON-LD）".format(total)
+    in_cnt = sum(1 for v in avail_map.values() if v)
+    return UNKNOWN, "SKU毎に在庫混在（{}/{}あり・公式JSON-LD）".format(in_cnt, total)
+
+
 def check_generic(url, product, config):
     """汎用在庫判定エンジン（任意のサイトに対応）。
 
@@ -665,22 +747,13 @@ def check_generic(url, product, config):
     size_pattern = product.get("size_pattern", "")
     stock_keyword = product.get("stock_keyword", "")
 
-    # 1.4 Coach Outlet: JSON-LDのavailabilityでカラー別在庫判定
+    # 1.4 汎用JSON-LD判定（schema.org Product/Offer・Coach等の公式ストア系）
+    jsonld_state, jsonld_detail = _check_json_ld(html, size_pattern)
+    if jsonld_state is not None:
+        return jsonld_state, jsonld_detail
+
+    # 1.4b Coach Outlet: カートボタン文言フォールバック（JSON-LDで取れない場合）
     if "coachoutlet.com" in url.lower():
-        m_sku = re.search(r'productID[^"]*"([^"]+)","sku"', html)  # 最初のSKU（ページ既定色）
-        # size_patternにカラーコード（例: QBDEB）が指定されている場合、そのSKUのavailabilityを探す
-        want_color = (product.get("size_pattern") or "").strip().upper()
-        if want_color:
-            for mm in re.finditer(
-                    r'"productID":"([^"]+)"(.{0,3000}?)"availability":"https://schema\.org/(\w+)"', html, re.S):
-                sku_raw = mm.group(1).upper()
-                if want_color.replace("/", "") in sku_raw.replace("/", "").replace(" ", ""):
-                    avail = mm.group(3)
-                    if avail in ("InStock", "LimitedAvailability", "PreOrder"):
-                        return IN_STOCK, "{}: 在庫あり（公式）".format(sku_raw)
-                    return SOLD_OUT, "{}: 在庫切れ（公式）".format(sku_raw)
-            return UNKNOWN, "カラー{}の在庫情報が見つかりません".format(want_color)
-        # size_patternなし: ページの add-to-cart ボタン文言で判定
         m_btn = re.search(r'id="add-to-cart"[^>]*>([^<]{1,30})', html)
         if m_btn:
             btn = m_btn.group(1).strip()
@@ -937,6 +1010,29 @@ def fetch_variants_fast(url, glm_api_key=""):
         return {"error": "GLM API通信エラー: {}".format(e)}
 
 
+COST_PRICE_PATTERNS = (
+    # JSON-LD price（schema.org・Coach等）
+    (re.compile(r'"price"\s*:\s*"?([\d,]+\.?\d*)"?'), None),
+    # Yahoo!ショッピング applicablePrice
+    (re.compile(r'"applicablePrice"\s*:\s*(\d+)'), None),
+    # メタタグ og:price:amount / product:price:amount
+    (re.compile(r'property="og:price:amount"[^>]*content="([\d,.]+)"'), None),
+    (re.compile(r'property="product:price:amount"[^>]*content="([\d,.]+)"'), None),
+)
+
+
+def extract_current_price(html):
+    """HTMLから商品価格を抽出（汎用・int円）。失敗時0。"""
+    for pat, _ in COST_PRICE_PATTERNS:
+        mm = pat.search(html)
+        if mm:
+            try:
+                return int(float(mm.group(1).replace(",", "")))
+            except ValueError:
+                continue
+    return 0
+
+
 def check_product(product, config=None):
     """
     戻り値: (state, detail)
@@ -1034,78 +1130,211 @@ def state_label(state):
     return {IN_STOCK: "在庫あり", SOLD_OUT: "売切れ", UNKNOWN: "未確認"}.get(state, state)
 
 
+def _process_result(p, new_state, detail, state, config, webhook):
+    """チェック結果の後処理（メインスレッドで順次実行・競合防止）。
+
+    戻り値: state辞書に変更があったか(bool)
+    """
+    pid = str(p.get("id"))
+    name = p.get("name", "?")
+    url = p.get("url", "")
+    prev = state.get(pid, {})
+    prev_state = prev.get("state")
+
+    content = None
+    if prev_state is None:
+        content = "ℹ️ 監視開始: {name}\n状態: {st} ({detail})\n{url}".format(
+            name=name, st=state_label(new_state), detail=detail, url=url
+        )
+    elif prev_state != new_state:
+        if prev_state == IN_STOCK and new_state == SOLD_OUT:
+            content = "🚨 売り切れました: {name}\n{detail}\n{url}".format(
+                name=name, detail=detail, url=url
+            )
+        elif new_state == IN_STOCK:
+            content = "🎉 再入荷しました: {name}\n{detail}\n{url}".format(
+                name=name, detail=detail, url=url
+            )
+        else:
+            content = "ℹ️ 状態変化: {name}\n{prev} → {st}\n{detail}\n{url}".format(
+                name=name,
+                prev=state_label(prev_state),
+                st=state_label(new_state),
+                detail=detail,
+                url=url,
+            )
+
+    if content:
+        if webhook:
+            send_discord(webhook, content)
+            print("    -> Discord notified")
+        else:
+            print("    -> (Discord webhook not configured, skip notify)")
+
+    if prev_state is None or prev_state != new_state:
+        append_history(p.get("id"), name, prev_state, new_state, detail)
+
+    if prev_state == IN_STOCK and new_state == SOLD_OUT:
+        notify_poizon_delist(p, config, detail)
+
+    # 仕入先値下がり検知（#6）: cost_price設定済み＆設定トグルONのみ
+    cost_alert_enabled = bool(config.get("cost_alert_enabled"))
+    link_cost = _get_link_cost(pid)
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    result_meta = {"checked_at": now_str}
+    if cost_alert_enabled and link_cost:
+        try:
+            html_c = fetch_html_auto(url)
+            cur_price = extract_current_price(html_c)
+            last_alert = state.get(pid, {}).get("last_cost_alert", "")
+            within_24h = False
+            if last_alert:
+                try:
+                    dt = datetime.datetime.now() - datetime.datetime.strptime(
+                        last_alert, "%Y-%m-%d %H:%M:%S")
+                    within_24h = dt.total_seconds() < 86400
+                except ValueError:
+                    pass
+            if cur_price and cur_price < link_cost and not within_24h:
+                msg = "📉 仕入先が値下がり: {name}\n¥{old:,} → ¥{new:,}（差額 ¥{diff:,}）\n{url}".format(
+                    name=name, old=link_cost, new=cur_price,
+                    diff=link_cost - cur_price, url=url)
+                send_discord(config.get("discord_webhook_url", ""), msg)
+                print("    -> 📉 値下がり通知送信")
+                result_meta["last_cost_alert"] = now_str
+                _update_link_cost(pid, cur_price)
+            elif cur_price and cur_price != link_cost:
+                # 変動はあるが通知条件外→静かに追従更新
+                _update_link_cost(pid, cur_price)
+        except Exception as e:
+            print("    -> 値下がりチェック skip: {}".format(e))
+
+    return result_meta
+
+
+_LINKS_CACHE = {}
+
+
+def _load_links():
+    import json as _json
+    try:
+        with open(BASE_DIR / "poizon_links.json", "r", encoding="utf-8-sig") as f:
+            return _json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _save_links(links):
+    import json as _json
+    with open(BASE_DIR / "poizon_links.json", "w", encoding="utf-8") as f:
+        _json.dump(links, f, ensure_ascii=False, indent=2)
+
+
+def _get_link_cost(pid):
+    """product_id → poizon_sku_id経由でcost_priceを取得。"""
+    links = _LINKS_CACHE.get("_data")
+    if links is None:
+        links = _load_links()
+        _LINKS_CACHE["_data"] = links
+    sku_id = str(_PID_TO_SKU.get(str(pid), ""))
+    if not sku_id:
+        return 0
+    return int((links.get(sku_id, {}) or {}).get("cost_price") or 0)
+
+
+def _update_link_cost(pid, new_price):
+    links = _load_links()
+    sku_id = str(_PID_TO_SKU.get(str(pid), ""))
+    if not sku_id or sku_id not in links:
+        return
+    links[sku_id]["cost_price"] = int(new_price)
+    _save_links(links)
+
+
+_PID_TO_SKU = {}
+
+
 def main():
     products = load_json(PRODUCTS_FILE, [])
     config = load_json(CONFIG_FILE, {})
     state = load_json(STATE_FILE, {})
     webhook = config.get("discord_webhook_url", "")
+    max_workers = int(config.get("parallel_workers") or 6)
+
+    # product_id → poizon_sku_id マップ（#6用）
+    global _PID_TO_SKU
+    _PID_TO_SKU = {str(p.get("id")): str(p.get("poizon_sku_id") or "") for p in products}
+    _LINKS_CACHE["_data"] = _load_links()
 
     print("=== checker start {} ===".format(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-    print("products: {}  (webhook: {})".format(len(products), "set" if webhook else "NOT set"))
+    print("products: {}  (webhook: {}  workers: {})".format(
+        len(products), "set" if webhook else "NOT set", max_workers))
 
-    changed = False
+    # チェック対象の選別（#11: check_interval）
+    to_check = []   # [(p, reason)]
+    skipped = []
+    now_dt = datetime.datetime.now()
     for p in products:
         if not p.get("enabled", True):
-            print("- [skip] {} (disabled)".format(p.get("name")))
+            skipped.append((p, "disabled"))
             continue
+        interval_min = float(p.get("check_interval") or 0)
+        if interval_min > 0:
+            pid = str(p.get("id"))
+            checked_at = (state.get(pid, {}) or {}).get("checked_at", "")
+            if checked_at:
+                try:
+                    elapsed = (now_dt - datetime.datetime.strptime(
+                        checked_at, "%Y-%m-%d %H:%M:%S")).total_seconds() / 60.0
+                    if elapsed < interval_min:
+                        skipped.append((p, "interval({:.0f}/{:.0f}分)".format(elapsed, interval_min)))
+                        continue
+                except ValueError:
+                    pass
+        to_check.append((p, "ok"))
 
+    for p, why in skipped:
+        if why == "disabled":
+            print("- [skip] {} (disabled)".format(p.get("name")))
+        else:
+            print("- [skip] {} ({})".format(p.get("name"), why))
+
+    # 並列fetch（#3）: check_productのみ並列・後処理はメインスレッド順次
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    results = {}
+    if to_check:
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futs = {ex.submit(check_product, p, config): p for p, _ in to_check}
+            for fut in as_completed(futs):
+                p = futs[fut]
+                try:
+                    results[str(p.get("id"))] = fut.result()
+                except Exception as e:
+                    results[str(p.get("id"))] = (UNKNOWN, "チェックエラー: {}".format(e))
+    else:
+        results = {}
+
+    changed = False
+    for p, _why in to_check:
         pid = str(p.get("id"))
         name = p.get("name", "?")
         url = p.get("url", "")
         print("- checking: {}".format(name))
 
-        new_state, detail = check_product(p, config)
-        prev = state.get(pid, {})
-        prev_state = prev.get("state")
-
+        new_state, detail = results.get(pid, (UNKNOWN, "結果なし"))
         print("    state: {} / detail: {}".format(state_label(new_state), detail))
 
-        # 通知判定
-        content = None
-        if prev_state is None:
-            # 初回
-            content = "ℹ️ 監視開始: {name}\n状態: {st} ({detail})\n{url}".format(
-                name=name, st=state_label(new_state), detail=detail, url=url
-            )
-        elif prev_state != new_state:
-            if prev_state == IN_STOCK and new_state == SOLD_OUT:
-                content = "🚨 売り切れました: {name}\n{detail}\n{url}".format(
-                    name=name, detail=detail, url=url
-                )
-            elif new_state == IN_STOCK:
-                content = "🎉 再入荷しました: {name}\n{detail}\n{url}".format(
-                    name=name, detail=detail, url=url
-                )
-            else:
-                content = "ℹ️ 状態変化: {name}\n{prev} → {st}\n{detail}\n{url}".format(
-                    name=name,
-                    prev=state_label(prev_state),
-                    st=state_label(new_state),
-                    detail=detail,
-                    url=url,
-                )
-
-        if content:
-            if webhook:
-                send_discord(webhook, content)
-                print("    -> Discord notified")
-            else:
-                print("    -> (Discord webhook not configured, skip notify)")
-
-        # 状態変化履歴を記録（初回・変化時すべて）
-        if prev_state is None or prev_state != new_state:
-            append_history(p.get("id"), name, prev_state, new_state, detail)
-
-        # 売切れ時のみ POIZON出品取り下げ連動(在庫通知くん→POIZON API)
-        if prev_state == IN_STOCK and new_state == SOLD_OUT:
-            notify_poizon_delist(p, config, detail)
+        meta = _process_result(p, new_state, detail, state, config, webhook)
 
         state[pid] = {
             "name": name,
             "state": new_state,
             "detail": detail,
             "updated_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "checked_at": meta.get("checked_at"),
         }
+        if meta.get("last_cost_alert"):
+            state[pid]["last_cost_alert"] = meta["last_cost_alert"]
         changed = True
 
     if changed:

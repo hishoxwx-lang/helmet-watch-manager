@@ -48,6 +48,13 @@
             <input type="text" name="stock_keyword" class="form-control" value="{{ product.stock_keyword }}">
           </div>
           <div class="mb-3">
+            <label class="form-label">監視間隔（分）</label>
+            <input type="number" name="check_interval" min="0" step="1" class="form-control"
+                   value="{{ product.check_interval if product.check_interval is defined else 0 }}"
+                   placeholder="0 = 毎回チェック（デフォルト）">
+            <div class="form-text">例: 30 → 前回チェックから30分経過するまでスキップ。空欄/0で毎回。</div>
+          </div>
+          <div class="mb-3">
             <label class="form-label">POIZON SKU ID <small class="text-muted">(任意・売切れ自動取消用)</small></label>
             <input type="text" name="poizon_sku_id" class="form-control" value="{{ product.poizon_sku_id }}"
                    placeholder="例: 894537995（POIZON出品管理画面からコピー・空欄で連動なし）">

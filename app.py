@@ -175,6 +175,10 @@ def add():
         image_url = fetch_og_image(url)
     except Exception:
         image_url = ""
+    try:
+        check_interval = float(request.form.get("check_interval") or 0)
+    except ValueError:
+        check_interval = 0
     products.append({
         "id": next_product_id(products),
         "name": name,
@@ -184,6 +188,7 @@ def add():
         "enabled": enabled,
         "image_url": image_url,
         "poizon_sku_id": poizon_sku_id,
+        "check_interval": check_interval,
     })
     save_json(PRODUCTS_FILE, products)
     flash("商品を追加しました: {}".format(name), "success")
@@ -228,6 +233,10 @@ def edit(pid):
         product["size_pattern"] = (request.form.get("size_pattern") or "").strip()
         product["stock_keyword"] = (request.form.get("stock_keyword") or "").strip()
         product["poizon_sku_id"] = (request.form.get("poizon_sku_id") or "").strip()
+        try:
+            product["check_interval"] = float(request.form.get("check_interval") or 0)
+        except ValueError:
+            product["check_interval"] = 0
         save_json(PRODUCTS_FILE, products)
         flash("商品を更新しました: {}".format(name), "success")
         return redirect(url_for("index"))
@@ -277,6 +286,15 @@ def settings():
                 config["auto_adjust_min_profit"] = 0
             save_json(CONFIG_FILE, config)
             flash("自動調整設定を保存しました。", "success")
+        elif action == "backup_token":
+            bt = (request.form.get("backup_token") or "").strip()
+            config["backup_token"] = bt
+            save_json(CONFIG_FILE, config)
+            flash("バックアップトークンを保存しました。", "success")
+        elif action == "cost_alert":
+            config["cost_alert_enabled"] = request.form.get("enabled") == "on"
+            save_json(CONFIG_FILE, config)
+            flash("仕入先値下がり通知設定を保存しました。", "success")
         elif action == "external_token":
             config["external_api_token"] = (request.form.get("external_api_token") or "").strip()
             save_json(CONFIG_FILE, config)
@@ -320,6 +338,7 @@ def settings():
     ext_token = config.get("external_api_token", "")
     ext_token_masked = (ext_token[:8] + "...") if len(ext_token) > 8 else ext_token
     auto_min_profit = int(config.get("auto_adjust_min_profit") or 0)
+    cost_alert_enabled = bool(config.get("cost_alert_enabled"))
     return render_template(
         "settings.html",
         webhook=webhook, webhook_masked=webhook_masked,
@@ -331,6 +350,9 @@ def settings():
         ext_token=ext_token,
         ext_token_masked=ext_token_masked,
         auto_min_profit=auto_min_profit,
+        cost_alert_enabled=cost_alert_enabled,
+        backup_token=(config.get("backup_token") or ""),
+        backup_token_masked=((config.get("backup_token") or "")[:8] + "...") if len(config.get("backup_token") or "") > 8 else "",
     )
 
 
@@ -704,14 +726,25 @@ def poizon_listings_api():
             "stock_updated": "",
         })
 
-        # 利益計算（自価格 - 仕入値）
+        # 在庫状態を付与
+        product = sku_to_product.get(sku_id)
+        check_interval = 0.0
+        if product:
+            try:
+                check_interval = float(product.get("check_interval") or 0)
+            except (TypeError, ValueError):
+                check_interval = 0.0
+
+        # 利益計算（実質利益 = 売価×(1-手数料6%) − 作業費1500 − 仕入値）
         cp = enriched[-1].get("cost_price", 0)
         my_price = enriched[-1].get("price", 0) or 0
         if cp and my_price:
-            enriched[-1]["profit"] = my_price - cp
-
-        # 在庫状態を付与
-        product = sku_to_product.get(sku_id)
+            net = round(my_price * 0.94 - 1500 - cp)
+            enriched[-1]["profit"] = net
+            enriched[-1]["profit_rate"] = round(net / my_price * 100, 1) if my_price else 0
+        else:
+            enriched[-1]["profit_rate"] = None
+        enriched[-1]["check_interval"] = check_interval
         if product:
             s = state.get(str(product.get("id", "")), {})
             enriched[-1]["stock_state"] = s.get("state", "")
@@ -1526,6 +1559,39 @@ def poizon_auto_adjust_api():
     return jsonify({"ok": True, "dry_run": False, "results": results,
                     "adjusted": sum(1 for r in results if r["result"] == "ok"),
                     "failed": sum(1 for r in results if r["result"] == "fail")})
+
+
+# ---------- バックアップAPI（#8） ----------
+@app.route("/api/backup", methods=["GET"])
+def backup_api():
+    """ユーザーデータ5ファイルを1つのJSONで返す（バックアップ用）。
+
+    認証: X-Api-Token ヘッダーに config の backup_token、またはログインセッション。
+    APIキー類は復元用に実値のまま含む。レスポンスは外部に出さないこと。
+    """
+    config = load_config()
+    token = request.headers.get("X-Api-Token", "").strip()
+    expected = (config.get("backup_token") or "").strip()
+    if not (is_logged_in() or (expected and token == expected)):
+        return jsonify({"error": "認証が必要です"}), 403
+
+    files = ["config.json", "products.json", "poizon_links.json",
+             "state.json", "state_history.json"]
+    data = {}
+    for fn in files:
+        p = BASE_DIR / fn
+        try:
+            with open(p, "r", encoding="utf-8-sig") as f:
+                data[fn] = json.load(f)
+        except FileNotFoundError:
+            data[fn] = None
+        except Exception as e:
+            data[fn] = {"_error": str(e)}
+    return jsonify({
+        "_backup_version": 1,
+        "_generated_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        **data,
+    })
 
 
 # ---------- main ----------

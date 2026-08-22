@@ -150,6 +150,40 @@
     </div>
 
     <div class="card mb-3">
+      <div class="card-header bg-white"><strong>📉 仕入先値下がり通知</strong></div>
+      <div class="card-body">
+        <p class="text-muted small mb-2">監視チェック時に仕入先ページの現在価格を取得し、前回より安くなっていたらDiscord通知します（24時間以内の重複通知なし）。価格は自動で追従更新されます。</p>
+        <form method="post" action="{{ url_for('settings') }}">
+          <input type="hidden" name="action" value="cost_alert">
+          <div class="form-check form-switch">
+            <input type="checkbox" name="enabled" id="costAlertOn" class="form-check-input" {% if cost_alert_enabled %}checked{% endif %}>
+            <label for="costAlertOn" class="form-check-label">有効にする</label>
+          </div>
+          <button type="submit" class="btn btn-primary btn-sm mt-2">保存</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="card mb-3">
+      <div class="card-header bg-white"><strong>☁️ 自動バックアップ</strong></div>
+      <div class="card-body">
+        <p class="text-muted small mb-2">GitHub Actionsが毎日22:00(JST)に <span class="mono">/api/backup</span> を叩いてデータを退避します。下のトークンをGitHub Secrets の <span class="mono">BACKUP_TOKEN</span> に登録してください（URLは <span class="mono">BACKUP_URL</span> = http://160.251.227.76:8080）。</p>
+        {% if backup_token %}
+          現在: <span class="mono">{{ backup_token_masked }}</span>
+        {% else %}
+          <span class="text-warning">未設定</span>
+        {% endif %}
+        <form method="post" action="{{ url_for('settings') }}" class="mt-2">
+          <input type="hidden" name="action" value="backup_token">
+          <div class="input-group" style="max-width:360px">
+            <input type="text" name="backup_token" class="form-control" placeholder="英数字ランダム文字列" value="">
+            <button type="submit" class="btn btn-primary">保存</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="card mb-3">
       <div class="card-header bg-white"><strong>⚙ 自動価格調整</strong></div>
       <div class="card-body">
         <p class="text-muted small mb-2">

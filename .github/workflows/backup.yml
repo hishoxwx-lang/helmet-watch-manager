@@ -1,0 +1,53 @@
+# 在庫通知くん 自動バックアップ（#8）
+# 毎日22:00 JST（13:00 UTC）にConoHaの/api/backupを叩いてartifacts保存
+# Secrets: BACKUP_TOKEN（settings画面で生成したトークン）
+name: daily-backup
+
+on:
+  schedule:
+    - cron: '0 13 * * *'   # 22:00 JST
+  workflow_dispatch: {}      # 手動実行も可
+
+permissions:
+  contents: none
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fetch backup JSON from ConoHa
+        env:
+          BACKUP_URL: ${{ secrets.BACKUP_URL }}
+          BACKUP_TOKEN: ${{ secrets.BACKUP_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$BACKUP_URL" ] || [ -z "$BACKUP_TOKEN" ]; then
+            echo "::error::Secrets BACKUP_URL / BACKUP_TOKEN が未設定です"
+            exit 1
+          fi
+          HTTP_CODE=$(curl -sS -o backup.json -w "%{http_code}" \
+            -H "X-Api-Token: $BACKUP_TOKEN" \
+            --max-time 30 \
+            "$BACKUP_URL/api/backup")
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::backup API failed: HTTP $HTTP_CODE"
+            exit 1
+          fi
+          # 応答の整合性チェック
+          python3 - <<'EOF'
+          import json
+          with open("backup.json") as f:
+              d = json.load(f)
+          assert d.get("_backup_version") == 1, "backup_version不正"
+          assert "products.json" in d, "products.json欠落"
+          assert "config.json" in d, "config.json欠落"
+          print("backup OK:", d.get("_generated_at"), "| products:", len(d.get("products.json") or []), "件")
+          EOF
+
+      - name: Upload artifact (90日保持)
+        uses: actions/upload-artifact@v4
+        with:
+          name: zaiko-backup-${{ github.run_id }}
+          path: backup.json
+          retention-days: 90
