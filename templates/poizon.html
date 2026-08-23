@@ -1229,7 +1229,7 @@
             '<td style="padding:7px 8px;text-align:right;border-bottom:1px solid var(--border);font-weight:600">¥' + Number(r.price||0).toLocaleString() + '</td>' +
             '<td style="padding:7px 8px;text-align:center;border-bottom:1px solid var(--border)">' + badge + '</td>' +
             '<td style="padding:7px 8px;border-bottom:1px solid var(--border);font-size:11px;color:var(--text-muted)">' +
-            (r.delisted_at ? escapeHtml(r.delisted_at) + '<br>' + escapeHtml(r.delist_reason || '') : 'status=' + escapeHtml(String(r.tradeStatus)) + '/' + escapeHtml(String(r.tradeSubStatus))) +
+            (r.delisted_at ? escapeHtml(r.delisted_at) + '<br>' + escapeHtml(r.delist_reason || '') : escapeHtml(r.tradeStatusLabel || ('status=' + r.tradeStatus))) +
             '</td></tr>';
         }
         html += '</tbody></table>';

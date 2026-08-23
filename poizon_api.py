@@ -188,10 +188,26 @@ def get_active_listings(config):
     設定画面で入力済みの前提。
 
     100件超の場合はページングで全件取得する。
+    tradeStatus=2（出品中）で取得するが、取り下げ済み一覧用に
+    get_all_listings() で全ステータス取得も可能。
 
     Returns:
         list or {"error": "..."}
     """
+    return _get_listings_paged(config, trade_status=2)
+
+
+def get_all_listings(config):
+    """全ステータスの出品を取得（取り下げ済み一覧・成約済み含む）。
+
+    tradeStatus: 1=出品待ち, 2=出品中, 3=取引済み, 4=取消済, 6=成約済
+    （実データ確認 2026-08-24: 本番135件すべて tradeStatus=2・GAS WebApp.js 実装と一致）
+    """
+    return _get_listings_paged(config, trade_status=0)
+
+
+def _get_listings_paged(config, trade_status=2):
+    """ページングで出品一覧を全件取得する共通実装。"""
     app_key = (config.get("poizon_api_id") or "").strip()
     app_secret = (config.get("poizon_api_key") or "").strip()
     if not app_key or not app_secret:
@@ -205,6 +221,7 @@ def get_active_listings(config):
     for _ in range(max_pages):
         result = query_listings(
             app_key, app_secret,
+            trade_status=trade_status,
             exclusive_start_offset_id=offset_id,
         )
         if isinstance(result, dict) and "error" in result:

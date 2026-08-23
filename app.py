@@ -1658,9 +1658,9 @@ def delisted_listings_api():
     """
     if not is_logged_in():
         return jsonify({"error": "ログインが必要です"}), 401
-    from poizon_api import get_active_listings
+    from poizon_api import get_all_listings
     config = load_config()
-    result = get_active_listings(config)
+    result = get_all_listings(config)
     if isinstance(result, dict) and "error" in result:
         return jsonify({"error": str(result.get("error", ""))}), 200
 
@@ -1671,14 +1671,20 @@ def delisted_listings_api():
     for h in history:
         hist_by_sku.setdefault(str(h.get("sku_id") or ""), []).append(h)
 
-    # POIZON tradeStatus: 20=出品中 前提。それ以外で履歴に取り下げ記録があるものを抽出。
-    ACTIVE_STATUS = 20
+    # tradeStatus 実定義（2026-08-24 本番データ+GAS実装で確認）:
+    #   1=出品待ち, 2=出品中, 3=取引済み, 4=取消済, 6=成約済
+    # 出品中(2)以外を「取り下げ済み/売却済み」として一覧表示する。
+    ACTIVE_STATUS = 2
+    STATUS_LABEL = {1: "出品待ち", 3: "取引済み", 4: "取消済み", 6: "成約済み"}
     rows = []
     for item in result:
         if not isinstance(item, dict):
             continue
         status = item.get("tradeStatus", 0)
         if int(status or 0) == ACTIVE_STATUS:
+            continue
+        # 価格改定で無効化された旧出品（subStatus=5）は二重表示防止で除外
+        if int(item.get("tradeSubStatus") or 0) == 5:
             continue
         sku_id = str(item.get("skuId", ""))
         link_info = links.get(sku_id) or {}
@@ -1692,6 +1698,7 @@ def delisted_listings_api():
             "title": item.get("spuTitle", ""),
             "price": item.get("price", 0),
             "tradeStatus": status,
+            "tradeStatusLabel": STATUS_LABEL.get(int(status or 0), "その他({})".format(status)),
             "tradeSubStatus": item.get("tradeSubStatus", 0),
             "color": "",
             "size": "",
