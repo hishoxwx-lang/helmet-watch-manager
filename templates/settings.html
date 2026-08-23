@@ -53,7 +53,7 @@
           </div>
         </form>
         <hr class="my-3">
-        <button type="button" class="btn btn-outline-info btn-sm" id="testDiscordBtn" onclick="sendTestDiscord()">
+        <button type="button" class="btn btn-outline-info btn-sm" id="testDiscordBtn">
           📨 テスト通知を送信
         </button>
       </div>
@@ -160,6 +160,38 @@
             <label for="costAlertOn" class="form-check-label">有効にする</label>
           </div>
           <button type="submit" class="btn btn-primary btn-sm mt-2">保存</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="card mb-3">
+      <div class="card-header bg-white"><strong>🏷️ 価格追従（自動値下げ）</strong></div>
+      <div class="card-body">
+        <p class="text-muted small mb-2">
+          在庫チェックのたびに出品価格を確認し、自価格が追従先より高い場合に自動で値下げします。<br>
+          対象は「紐付け済み＋仕入値設定済み＋監視有効」のSKUのみ。商品別の最小利益（紐付けモーダルで設定）を下回る値下げは実行しません。
+          実行履歴は出品管理画面の「📜 履歴」で確認できます。
+        </p>
+        <form method="post" action="{{ url_for('settings') }}">
+          <input type="hidden" name="action" value="price_follow">
+          <div class="form-check form-switch">
+            <input type="checkbox" name="enabled" id="priceFollowOn" class="form-check-input" {% if price_follow_enabled %}checked{% endif %}>
+            <label for="priceFollowOn" class="form-check-label">有効にする</label>
+          </div>
+          <div class="row mt-2" style="max-width:640px">
+            <div class="col-sm-5">
+              <label class="form-label">追従先</label>
+              <select name="target" class="form-select form-select-sm">
+                <option value="market" {% if price_follow_target != 'cart' %}selected{% endif %}>市場最低値</option>
+                <option value="cart" {% if price_follow_target == 'cart' %}selected{% endif %}>カート価格</option>
+              </select>
+            </div>
+            <div class="col-sm-4">
+              <label class="form-label">1回の上限（件）</label>
+              <input type="number" name="max_changes" class="form-control form-control-sm" min="1" max="50" value="{{ price_follow_max_changes }}">
+            </div>
+          </div>
+          <button type="submit" class="btn btn-primary btn-sm mt-3">保存</button>
         </form>
       </div>
     </div>
@@ -283,6 +315,9 @@
         setTimeout(() => { btn.textContent = '📨 テスト通知を送信'; btn.disabled = false; }, 3000);
       }
     }
-  </script>
+
+    // イベントリスナー登録（インラインonclick排除）
+    document.getElementById('testDiscordBtn').addEventListener('click', sendTestDiscord);
+ </script>
 </body>
 </html>

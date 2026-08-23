@@ -1120,10 +1120,159 @@ def notify_poizon_delist(product, config, detail):
             pass
         print("    -> POIZON delist {}: HTTP {} {}".format(
             "OK" if ok else "FAIL", r.status_code, msg))
+        # 取り下げ履歴に記録（#8: 履歴と取り下げ済み一覧のデータソース）
+        append_delist_history({
+            "kind": "delist",
+            "sku_id": sku_id,
+            "name": product.get("name", "?"),
+            "url": product.get("url", ""),
+            "detail": detail,
+            "reason": "仕入先売切れ検知",
+            "ok": ok,
+            "http_status": r.status_code,
+            "response_message": msg[:200],
+            "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        })
         return ok
     except Exception as e:
         print("    -> POIZON delist error: {}".format(e))
+        append_delist_history({
+            "kind": "delist",
+            "sku_id": sku_id,
+            "name": product.get("name", "?"),
+            "url": product.get("url", ""),
+            "detail": detail,
+            "reason": "仕入先売切れ検知（送信エラー）",
+            "ok": False,
+            "error": str(e)[:200],
+            "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        })
         return False
+
+
+DELIST_HISTORY_FILE = BASE_DIR / "delist_history.json"
+
+
+def append_delist_history(entry):
+    """delist_history.json に1件追記（最新500件まで保持）。"""
+    try:
+        history = load_json(DELIST_HISTORY_FILE, [])
+        history.append(entry)
+        if len(history) > 500:
+            history = history[-500:]
+        save_json(DELIST_HISTORY_FILE, history)
+    except Exception as e:
+        print("  [!] 取り下げ履歴保存エラー: {}".format(e))
+
+
+def run_price_follow(products, config):
+    """価格追従（#6）: 自価格が追従先より高いSKUを自動値下げ。
+
+    仕組み:
+      - config.price_follow_enabled が true のときのみ動作（デフォルトOFF・設定画面で切替）
+      - 追従先: config.price_follow_target = "market"（市場最低値・既定）| "cart"（カート価格）
+      - 対象: 仕入値(cost_price)設定済み＆監視有効のSKUのみ（仕入値なしはガード不能なので追従しない）
+      - 利益ガード: 商品別 links.min_profit 優先、未設定なら全体 auto_adjust_min_profit
+        実質利益 = 新価格×0.94 − 1,500 − 仕入値 で判定し、ガード未満は変更しない
+      - 安全弁: 1回の実行で最大 price_follow_max_changes 件（既定10）・1秒間隔
+      - 履歴: delist_history.json に kind=price_follow で記録（UIの履歴モーダルに出る）
+    """
+    if not config.get("price_follow_enabled"):
+        return
+    try:
+        from poizon_api import get_active_listings, fetch_market_prices_batch, update_listing_price
+    except ImportError:
+        print("  [!] poizon_api を import できないため価格追従スキップ")
+        return
+    app_key = (config.get("poizon_api_id") or "").strip()
+    app_secret = (config.get("poizon_api_key") or "").strip()
+    if not app_key or not app_secret:
+        print("  -> 価格追従: POIZON API未設定のためスキップ")
+        return
+    target = (config.get("price_follow_target") or "market").strip().lower()
+    if target not in ("market", "cart"):
+        target = "market"
+    try:
+        max_changes = max(1, int(config.get("price_follow_max_changes") or 10))
+    except (TypeError, ValueError):
+        max_changes = 10
+
+    links = _load_links()
+    if not isinstance(links, dict):
+        links = {}
+    # 監視有効SKUのみ対象
+    monitored_skus = {}
+    for p in products:
+        sku = str(p.get("poizon_sku_id") or "")
+        if sku and p.get("enabled", True):
+            monitored_skus[sku] = p
+    if not monitored_skus:
+        return
+
+    result = get_active_listings(config)
+    if isinstance(result, dict) and "error" in result:
+        print("  -> 価格追従: 出品一覧取得エラー {}".format(result.get("error")))
+        return
+    all_sku_ids = [i.get("skuId") for i in result if i.get("skuId")]
+    price_map = fetch_market_prices_batch(all_sku_ids, app_key, app_secret) if all_sku_ids else {}
+
+    changed = 0
+    skipped_guard = 0
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    for item in result:
+        if not isinstance(item, dict):
+            continue
+        if changed >= max_changes:
+            print("  -> 価格追従: 1回あたり上限({}件)に到達・残りは次回".format(max_changes))
+            break
+        sku_id = str(item.get("skuId", ""))
+        if sku_id not in monitored_skus:
+            continue
+        link = links.get(sku_id) or {}
+        cost = int(link.get("cost_price") or 0)
+        if not cost:
+            continue
+        my_price = int(item.get("price") or 0)
+        market_min = int((price_map.get(sku_id) or {}).get("min_price") or 0)
+        cart_price = int((price_map.get(sku_id) or {}).get("cart_price") or 0)
+        dest = cart_price if target == "cart" else market_min
+        if target == "cart" and not dest:
+            dest = market_min
+        if not (my_price and dest and my_price > dest):
+            continue
+        net_profit = int(dest * 0.94 - 1500 - cost)
+        guard_raw = link.get("min_profit")
+        guard = int(guard_raw) if guard_raw is not None else int(config.get("auto_adjust_min_profit") or 0)
+        if net_profit < guard:
+            skipped_guard += 1
+            continue
+        upd = update_listing_price(
+            app_key, app_secret,
+            item.get("sellerBiddingNo", ""),
+            int(item.get("globalSkuId", 0)), dest)
+        ok = isinstance(upd, dict) and bool(upd.get("ok"))
+        print("    -> 価格追従[{}]: {} ¥{:,.0f} → ¥{:,.0f} （実質利益 ¥{:,.0f}）{}".format(
+            "カート" if target == "cart" else "市場最低",
+            monitored_skus[sku_id].get("name", sku_id), my_price, dest, net_profit,
+            "成功" if ok else "失敗"))
+        append_delist_history({
+            "kind": "price_follow",
+            "sku_id": sku_id,
+            "name": monitored_skus[sku_id].get("name", "?"),
+            "target": target,
+            "old_price": my_price,
+            "new_price": dest,
+            "cost": cost,
+            "profit": net_profit,
+            "ok": ok,
+            "error": (upd or {}).get("error", "") if not ok else "",
+            "timestamp": now_str,
+        })
+        if ok:
+            changed += 1
+        time.sleep(1.0)
+    if changed or skipped_guard:
+        print("  -> 価格追従完了: {}件変更 / 最小利益ガード{}件スキップ".format(changed, skipped_guard))
 
 
 def state_label(state):
@@ -1339,6 +1488,13 @@ def main():
 
     if changed:
         save_json(STATE_FILE, state)
+
+    # 価格追従（#6）: 在庫チェック後に実行（設定で有効時のみ）
+    try:
+        run_price_follow(products, config)
+    except Exception as e:
+        print("  [!] 価格追従エラー: {}".format(e))
+
     print("=== checker done ===")
 
 

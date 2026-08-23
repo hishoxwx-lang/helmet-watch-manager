@@ -14,6 +14,7 @@ import os
 import re
 import sys
 import subprocess
+import threading
 import datetime
 from functools import wraps
 from pathlib import Path
@@ -32,6 +33,7 @@ CONFIG_FILE = BASE_DIR / "config.json"
 STATE_FILE = BASE_DIR / "state.json"
 CHECKER_SCRIPT = BASE_DIR / "checker.py"
 STATE_HISTORY_FILE = BASE_DIR / "state_history.json"
+DELIST_HISTORY_FILE = BASE_DIR / "delist_history.json"
 
 # チェック実行状態管理（非同期化用）
 _check_status = {"status": "idle", "started_at": "", "finished_at": "", "output": ""}
@@ -295,6 +297,16 @@ def settings():
             config["cost_alert_enabled"] = request.form.get("enabled") == "on"
             save_json(CONFIG_FILE, config)
             flash("仕入先値下がり通知設定を保存しました。", "success")
+        elif action == "price_follow":
+            config["price_follow_enabled"] = request.form.get("enabled") == "on"
+            target = (request.form.get("target") or "market").strip().lower()
+            config["price_follow_target"] = target if target in ("market", "cart") else "market"
+            try:
+                config["price_follow_max_changes"] = max(1, int(request.form.get("max_changes") or 10))
+            except ValueError:
+                config["price_follow_max_changes"] = 10
+            save_json(CONFIG_FILE, config)
+            flash("価格追従設定を保存しました。", "success")
         elif action == "external_token":
             config["external_api_token"] = (request.form.get("external_api_token") or "").strip()
             save_json(CONFIG_FILE, config)
@@ -339,6 +351,12 @@ def settings():
     ext_token_masked = (ext_token[:8] + "...") if len(ext_token) > 8 else ext_token
     auto_min_profit = int(config.get("auto_adjust_min_profit") or 0)
     cost_alert_enabled = bool(config.get("cost_alert_enabled"))
+    price_follow_enabled = bool(config.get("price_follow_enabled"))
+    price_follow_target = config.get("price_follow_target") or "market"
+    try:
+        price_follow_max_changes = max(1, int(config.get("price_follow_max_changes") or 10))
+    except (TypeError, ValueError):
+        price_follow_max_changes = 10
     return render_template(
         "settings.html",
         webhook=webhook, webhook_masked=webhook_masked,
@@ -351,6 +369,9 @@ def settings():
         ext_token_masked=ext_token_masked,
         auto_min_profit=auto_min_profit,
         cost_alert_enabled=cost_alert_enabled,
+        price_follow_enabled=price_follow_enabled,
+        price_follow_target=price_follow_target,
+        price_follow_max_changes=price_follow_max_changes,
         backup_token=(config.get("backup_token") or ""),
         backup_token_masked=((config.get("backup_token") or "")[:8] + "...") if len(config.get("backup_token") or "") > 8 else "",
     )
@@ -717,6 +738,7 @@ def poizon_listings_api():
             "source_url": link_info.get("url", ""),
             "source_name": link_info.get("name", ""),
             "cost_price": link_info.get("cost_price", 0) or 0,
+            "min_profit": link_info.get("min_profit") if link_info.get("min_profit") is not None else None,
             "profit": 0,
             "linked": bool(link_info.get("url")),
             "monitoring": link_info.get("enabled", False),
@@ -788,6 +810,27 @@ def poizon_update_price_api():
     return jsonify(result)
 
 
+def _fetch_og_image_bg(url):
+    """og:image取得をバックグラウンドで行い products.json の該当商品に反映する。
+
+    紐付け保存APIの応答をブロックしないための非同期ヘルパー（フリーズ対策）。
+    """
+    try:
+        image_url = fetch_og_image(url)
+        if not image_url:
+            return
+        products = load_products()
+        changed = False
+        for p in products:
+            if (p.get("url") or "") == url and not p.get("image_url"):
+                p["image_url"] = image_url
+                changed = True
+        if changed:
+            save_json(PRODUCTS_FILE, products)
+    except Exception:
+        pass
+
+
 @app.route("/api/poizon/link", methods=["POST"])
 @login_required
 def poizon_link_api():
@@ -815,6 +858,9 @@ def poizon_link_api():
     except ValueError:
         cost_price = 0
 
+    # 商品別最小利益（#7・価格追従/自動調整のガード）。空欄なら既存値維持・"clear"で削除
+    min_profit_raw = str((request.form.get("min_profit") if request.form else "") or "").strip()
+
     links[sku_id] = {
         "url": url,
         "name": name,
@@ -822,6 +868,17 @@ def poizon_link_api():
     }
     if cost_price > 0:
         links[sku_id]["cost_price"] = cost_price
+    prev_link = load_poizon_links().get(sku_id) or {}
+    if min_profit_raw == "clear":
+        pass  # min_profit を付けない（全体設定に戻す）
+    elif min_profit_raw == "":
+        if prev_link.get("min_profit") is not None:
+            links[sku_id]["min_profit"] = prev_link["min_profit"]  # 既存値維持
+    else:
+        try:
+            links[sku_id]["min_profit"] = max(0, int(float(min_profit_raw)))
+        except ValueError:
+            pass
     save_poizon_links(links)
 
     # products.json にも追加（監視対象にする）
@@ -838,11 +895,10 @@ def poizon_link_api():
         existing["name"] = name or existing.get("name", "")
         existing["enabled"] = enabled
     else:
+        # og:image取得は時間がかかる可能性があるためバックグラウンドで実行。
+        # 保存レスポンスを即返し（UIフリーズ解消・2026-08-23）。画像は次回チェック後に反映。
         image_url = ""
-        try:
-            image_url = fetch_og_image(url)
-        except Exception:
-            pass
+        threading.Thread(target=_fetch_og_image_bg, args=(url,), daemon=True).start()
         products.append({
             "id": next_product_id(products),
             "name": name or "POIZON:{}".format(sku_id),
@@ -1492,6 +1548,10 @@ def poizon_auto_adjust_api():
     sku_ids_raw = (request.form.get("sku_ids") or "").strip()
     dry_run = (request.form.get("dry_run") or "1") == "1"
     use_net = (request.form.get("use_net") or "0") == "1"
+    # target=market: 市場最低値へ追従（従来動作）/ target=cart: カート価格へ個別追従
+    target = (request.form.get("target") or "market").strip().lower()
+    if target not in ("market", "cart"):
+        target = "market"
 
     config = load_config()
     min_profit = int(config.get("auto_adjust_min_profit") or 0)
@@ -1518,10 +1578,15 @@ def poizon_auto_adjust_api():
         link = links.get(sku_id, {})
         cost = int(link.get("cost_price") or 0)
         market_min = int((price_map.get(sku_id, {}) or {}).get("min_price") or 0)
+        cart_price = int((price_map.get(sku_id, {}) or {}).get("cart_price") or 0)
         my_price = int(item.get("price") or 0)
-        if not (cost and market_min and my_price and my_price > market_min):
+        # 追従先価格（targetで切替・カート価格は0のとき市場最低値にフォールバック）
+        dest = cart_price if target == "cart" else market_min
+        if target == "cart" and not dest:
+            dest = market_min
+        if not (my_price and dest and my_price > dest):
             continue
-        new_price = market_min
+        new_price = dest
         # 実質利益（POIZON手数料5%+決済1%+作業1,500円相当を差し引く）
         if use_net:
             net_profit = int(new_price * 0.94 - 1500 - cost)
@@ -1529,13 +1594,20 @@ def poizon_auto_adjust_api():
             net_profit = new_price - cost
         entry = {"sku_id": sku_id, "title": (item.get("spuTitle") or "")[:40],
                  "current": my_price, "new": new_price, "cost": cost,
-                 "profit": net_profit, "action": "adjust"}
-        if net_profit < min_profit:
+                 "profit": net_profit, "target": target, "action": "adjust"}
+        # 最小利益ガード: 商品別設定（links.min_profit）優先・未設定なら全体設定
+        guard = link.get("min_profit")
+        guard = int(guard) if guard is not None else min_profit
+        entry["min_profit"] = guard
+        if cost and net_profit < guard:
             entry["action"] = "skip_min_profit"
+        elif not cost:
+            # 仕入値未設定なら金額ガード不可（追従許可・従来同等）
+            pass
         plan.append(entry)
 
     if dry_run:
-        return jsonify({"ok": True, "dry_run": True, "plan": plan,
+        return jsonify({"ok": True, "dry_run": True, "target": target, "plan": plan,
                         "adjustable": sum(1 for p in plan if p["action"] == "adjust")})
 
     # 実行（1秒間隔）
@@ -1556,9 +1628,82 @@ def poizon_auto_adjust_api():
                         "detail": (upd or {}).get("error", "") if not ok else ""})
         _time.sleep(1.0)
 
-    return jsonify({"ok": True, "dry_run": False, "results": results,
+    return jsonify({"ok": True, "dry_run": False, "target": target, "results": results,
                     "adjusted": sum(1 for r in results if r["result"] == "ok"),
                     "failed": sum(1 for r in results if r["result"] == "fail")})
+
+
+# ---------- 取り下げ履歴API（#8/#9） ----------
+@app.route("/api/delist_history", methods=["GET"])
+@login_required
+def delist_history_api():
+    """自動取り下げ＋価格追従の実行履歴を返す（新しい順・最新100件）。"""
+    if not is_logged_in():
+        return jsonify({"error": "ログインが必要です"}), 401
+    history = load_json(DELIST_HISTORY_FILE, [])
+    kind = (request.args.get("kind") or "").strip()
+    if kind:
+        history = [h for h in history if h.get("kind") == kind]
+    history = list(reversed(history[-100:]))
+    return jsonify({"history": history, "count": len(history)})
+
+
+@app.route("/api/delisted_listings", methods=["GET"])
+@login_required
+def delisted_listings_api():
+    """取り下げ済み出品一覧。
+
+    出品一覧APIと同じデータソースから tradeStatus で判定し、
+    delist_history.json の記録と突き合わせて「自動取り下げ済み」フラグを付ける。
+    """
+    if not is_logged_in():
+        return jsonify({"error": "ログインが必要です"}), 401
+    from poizon_api import get_active_listings
+    config = load_config()
+    result = get_active_listings(config)
+    if isinstance(result, dict) and "error" in result:
+        return jsonify({"error": str(result.get("error", ""))}), 200
+
+    links = load_poizon_links()
+    history_raw = load_json(DELIST_HISTORY_FILE, [])
+    history = [h for h in history_raw if isinstance(h, dict) and h.get("kind") == "delist"]
+    hist_by_sku = {}
+    for h in history:
+        hist_by_sku.setdefault(str(h.get("sku_id") or ""), []).append(h)
+
+    # POIZON tradeStatus: 20=出品中 前提。それ以外で履歴に取り下げ記録があるものを抽出。
+    ACTIVE_STATUS = 20
+    rows = []
+    for item in result:
+        if not isinstance(item, dict):
+            continue
+        status = item.get("tradeStatus", 0)
+        if int(status or 0) == ACTIVE_STATUS:
+            continue
+        sku_id = str(item.get("skuId", ""))
+        link_info = links.get(sku_id) or {}
+        hlist = hist_by_sku.get(sku_id, [])
+        auto_delisted = bool(hlist) or str(link_info.get("_delisted", "")) == "1"
+        last_h = hlist[-1] if hlist else None
+        rows.append({
+            "sellerBiddingNo": item.get("sellerBiddingNo", ""),
+            "skuId": sku_id,
+            "spuId": item.get("spuId", ""),
+            "title": item.get("spuTitle", ""),
+            "price": item.get("price", 0),
+            "tradeStatus": status,
+            "tradeSubStatus": item.get("tradeSubStatus", 0),
+            "color": "",
+            "size": "",
+            "source_url": link_info.get("url", ""),
+            "auto_delisted": auto_delisted,
+            "delisted_at": (last_h or {}).get("timestamp", ""),
+            "delist_reason": (last_h or {}).get("reason", ""),
+        })
+    # SKUのカラー/サイズは軽量化のため省略（一覧はタイトル中心）
+    rows.sort(key=lambda r: r.get("delisted_at") or "", reverse=True)
+    return jsonify({"listings": rows, "count": len(rows),
+                    "auto_count": sum(1 for r in rows if r["auto_delisted"])})
 
 
 # ---------- バックアップAPI（#8） ----------
@@ -1576,7 +1721,7 @@ def backup_api():
         return jsonify({"error": "認証が必要です"}), 403
 
     files = ["config.json", "products.json", "poizon_links.json",
-             "state.json", "state_history.json"]
+             "state.json", "state_history.json", "delist_history.json"]
     data = {}
     for fn in files:
         p = BASE_DIR / fn

@@ -129,6 +129,7 @@
   .form-control:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(14,165,233,.15)}
   .form-hint{font-size:11px;color:var(--text-muted);margin-top:3px}
   .form-check{display:flex;align-items:center;gap:8px;margin-bottom:14px;cursor:pointer}
+  .form-row-2col{display:grid;grid-template-columns:1fr 1fr;gap:12px}
   .form-check input[type=checkbox]{width:16px;height:16px;accent-color:var(--accent);cursor:pointer}
   .form-check label{font-size:13px;color:var(--text);cursor:pointer}
   .history-timeline{max-height:400px;overflow-y:auto}
@@ -146,6 +147,27 @@
   .toast-msg{position:fixed;top:70px;right:24px;z-index:9999;padding:10px 16px;border-radius:var(--radius-md);font-size:13px;font-weight:500;color:#fff;box-shadow:var(--shadow-md);animation:slideIn .3s ease}
   .toast-msg.success{background:var(--success)} .toast-msg.info{background:var(--info)} .toast-msg.warn{background:var(--warn)}
   @keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
+  /* === #2 スクロール固定（ヘッダー/ブランドタブ/ツールバー/列ヘッダー） === */
+  .brand-tabs{position:sticky;top:56px;z-index:30;background:var(--bg);padding:10px 2px;margin-bottom:6px;border-bottom:1px solid var(--border);border-radius:0}
+  .toolbar{position:sticky;top:104px;z-index:29;border-radius:var(--radius-lg)}
+  .table-scroll{max-height:calc(100vh - 240px);overflow-y:auto}
+  thead th{position:sticky;top:0;z-index:10}
+  /* === #4 行クリック領域 === */
+  tbody tr.row-linkable{cursor:pointer}
+  tbody tr.row-linkable .col-action, tbody tr.row-linkable .col-check, tbody tr.row-linkable a, tbody tr.row-linkable .price-editable, tbody tr.row-linkable .cost-editable{cursor:default}
+  tbody tr.row-linkable .col-action *, tbody tr.row-linkable .col-check *{cursor:pointer}
+  tbody tr.row-linkable a{cursor:pointer}
+  tbody tr.row-linkable .price-editable, tbody tr.row-linkable .cost-editable{cursor:pointer}
+  /* === 🎯 カート価格合わせ・履歴ボタン === */
+  .cart-match-btn{cursor:pointer;font-size:11px;padding:1px 6px;border-radius:4px;border:1px solid var(--border);background:var(--surface);color:var(--text-muted);white-space:nowrap}
+  .cart-match-btn:hover{color:var(--accent);border-color:var(--accent);background:var(--surface-2)}
+  .cart-match-btn:disabled{opacity:.5;cursor:not-allowed}
+  .follow-badge{display:inline-flex;align-items:center;padding:2px 7px;border-radius:var(--radius-sm);font-size:10px;font-weight:600;background:#fef9c3;color:#a16207;border:1px solid #fde68a;margin-left:4px;cursor:pointer}
+  /* === 履歴モーダル タブ === */
+  .hist-tabs{display:flex;gap:6px;margin-bottom:12px}
+  .hist-tab{flex:1;text-align:center;padding:7px 10px;border-radius:var(--radius);border:1px solid var(--border);background:var(--surface);font-size:12px;font-weight:600;color:var(--text-muted);cursor:pointer}
+  .hist-tab.active{background:var(--brand);color:#fff;border-color:var(--brand)}
+  .delist-row-auto{background:#fffbeb}
   @media(max-width:640px){.container,.header{padding:0 12px}.summary-cards{grid-template-columns:repeat(2,1fr)}.col-sku,.col-status{display:none}}
   </style>
 </head>
@@ -159,6 +181,8 @@
       </span>
     </div>
     <div class="header-right">
+      <button class="btn btn-outline btn-sm" id="histBtn" title="在庫変化・取り下げ・価格追従の履歴">📜 履歴</button>
+      <button class="btn btn-outline btn-sm" id="delistedBtn" title="出品中以外の一覧">🚫 取り下げ済み</button>
       <button class="btn btn-outline btn-sm" id="updateBtn">🔄 最新版に更新</button>
       <button class="btn btn-primary btn-sm" id="checkBtn">▶ 今すぐチェック</button>
       <a href="{{ url_for('settings') }}" class="btn btn-outline btn-sm">⚙ 設定</a>
@@ -254,6 +278,16 @@
               <input type="url" class="form-control" id="linkUrl" placeholder="https://www.yodobashi.com/product/..." required>
               <div class="form-hint">Webike / Yahoo! / 楽天 / ヨドバシ / Amazon 等</div>
             </div>
+            <div class="form-row-2col">
+              <div class="form-group">
+                <label class="form-label">仕入値 <span class="opt">(円)</span></label>
+                <input type="number" class="form-control" id="linkCostPrice" placeholder="例: 15000" min="0">
+              </div>
+              <div class="form-group">
+                <label class="form-label">最小利益 <span class="opt">(円・価格追従のガード)</span></label>
+                <input type="number" class="form-control" id="linkMinProfit" placeholder="空欄=設定画面の全体値" min="0">
+              </div>
+            </div>
             <div class="form-check">
               <input type="checkbox" id="linkEnabled" checked>
               <label for="linkEnabled">在庫監視を有効にする</label>
@@ -269,19 +303,50 @@
     </div>
   </div>
 
-  <!-- 履歴モーダル -->
+  <!-- 履歴モーダル（在庫変化＋取り下げ＋価格追従 タブ式） -->
   <div class="modal fade" id="historyModal" tabindex="-1">
     <div class="modal-dialog modal-dialog-centered">
       <div class="modal-content">
         <div class="modal-header">
           <div>
-            <h5 class="modal-title">📋 在庫変化履歴</h5>
+            <h5 class="modal-title">📜 履歴</h5>
             <div class="modal-sub" id="historyModalSub"></div>
           </div>
           <button type="button" class="btn-close" data-bs-dismiss="modal">×</button>
         </div>
         <div class="modal-body">
-          <div class="history-timeline" id="historyTimeline"></div>
+          <div class="hist-tabs" id="histTabs">
+            <div class="hist-tab active" data-hist-tab="stock">📋 在庫変化</div>
+            <div class="hist-tab" data-hist-tab="delist">🚫 取り下げ</div>
+            <div class="hist-tab" data-hist-tab="price_follow">🏷️ 価格追従</div>
+          </div>
+          <div id="histStockPane">
+            <div class="history-timeline" id="historyTimeline"></div>
+          </div>
+          <div id="histDelistPane" style="display:none">
+            <div class="history-timeline" id="delistTimeline"></div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline btn-sm" data-bs-dismiss="modal">閉じる</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 取り下げ済み一覧モーダル -->
+  <div class="modal fade" id="delistedModal" tabindex="-1">
+    <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+      <div class="modal-content">
+        <div class="modal-header">
+          <div>
+            <h5 class="modal-title">🚫 取り下げ済み一覧</h5>
+            <div class="modal-sub" id="delistedSub">出品中以外（売却済・取り下げ済み）の出品。自動取り下げ分は黄色で表示。</div>
+          </div>
+          <button type="button" class="btn-close" data-bs-dismiss="modal">×</button>
+        </div>
+        <div class="modal-body" style="padding:8px 22px 18px">
+          <div id="delistedArea" style="max-height:60vh;overflow-y:auto"></div>
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-outline btn-sm" data-bs-dismiss="modal">閉じる</button>
@@ -296,12 +361,14 @@
     var allListings = [];
     var linkModal = null;
     var historyModal = null;
+    var delistedModal = null;
     var activeBrand = 'ALL';
     var sortColumn = null;
     var sortDirection = null;
     var selectedSkus = new Set();
     var currentPage = 1; // #9 ページング
     var autoRefreshTimer = null;
+    var histTab = 'stock'; // 履歴モーダルのアクティブタブ
 
     // URL定義（Jinja2から注入）
     var API_LISTINGS = '{{ url_for("poizon_listings_api") }}';
@@ -309,6 +376,8 @@
     var API_LINK = '{{ url_for("poizon_link_api") }}';
     var API_HISTORY = '{{ url_for("history_api") }}';
     var API_CHECK_STATUS = '{{ url_for("check_status_api") }}';
+    var API_DELIST_HISTORY = '/api/delist_history';
+    var API_DELISTED_LISTINGS = '/api/delisted_listings';
     var URL_RUN = '{{ url_for("run") }}';
     var URL_UPDATE = '{{ url_for("update") }}';
 
@@ -316,31 +385,60 @@
     document.addEventListener('DOMContentLoaded', function() {
       linkModal = new bootstrap.Modal(document.getElementById('linkModal'));
       historyModal = new bootstrap.Modal(document.getElementById('historyModal'));
+      delistedModal = new bootstrap.Modal(document.getElementById('delistedModal'));
 
       // イベントリスナー登録（インラインonclick排除）
       document.getElementById('refreshBtn').addEventListener('click', loadListings);
       document.getElementById('checkBtn').addEventListener('click', function() { runCheckAsync(this); });
       document.getElementById('updateBtn').addEventListener('click', function() { updateVersion(this); });
+      document.getElementById('histBtn').addEventListener('click', function() { showHistoryModal(); });
+      document.getElementById('delistedBtn').addEventListener('click', showDelisted);
       document.getElementById('searchBox').addEventListener('input', filterListings);
       document.getElementById('batchAdjustBtn').addEventListener('click', batchAdjustToMarketPrice);
       document.getElementById('autoAdjustBtn').addEventListener('click', runAutoAdjust);
       document.getElementById('clearSelBtn').addEventListener('click', clearSelection);
       document.getElementById('unlinkBtn').addEventListener('click', unlinkItem);
-      document.getElementById('linkSaveBtn').addEventListener('click', function() {
-        currentPage = 1; // #9 検索時は1頁へ
-        // フォーム送信
+
+      // 履歴モーダルのタブ切替
+      document.getElementById('histTabs').addEventListener('click', function(e) {
+        var tab = e.target.closest('.hist-tab');
+        if (!tab) return;
+        switchHistTab(tab.dataset.histTab);
+      });
+
+      // #5 保存: 即レスポンス・成功トースト（フリーズ解消済みAPI）
+      document.getElementById('linkSaveBtn').addEventListener('click', async function() {
+        var btn = this;
         var fd = new FormData();
         fd.append('sku_id', document.getElementById('linkSkuId').value);
         fd.append('url', document.getElementById('linkUrl').value);
         fd.append('name', document.getElementById('linkName').value);
         fd.append('enabled', document.getElementById('linkEnabled').checked ? 'on' : 'off');
-        fetch(API_LINK, { method: 'POST', body: fd })
-          .then(function(r) { return r.json(); })
-          .then(function(data) {
-            if (data.ok) { linkModal.hide(); loadListings(); }
-            else alert('エラー: ' + (data.error || '不明'));
-          })
-          .catch(function(e) { alert('通信エラー: ' + e); });
+        var costVal = parseInt(document.getElementById('linkCostPrice').value);
+        if (costVal > 0) fd.append('cost_price', costVal);
+        var minProfitVal = document.getElementById('linkMinProfit').value.trim();
+        if (minProfitVal !== '') fd.append('min_profit', minProfitVal);
+        btn.disabled = true;
+        var prevText = btn.textContent;
+        btn.textContent = '保存中...';
+        try {
+          var resp = await fetch(API_LINK, { method: 'POST', body: fd });
+          var ct = resp.headers.get('content-type') || '';
+          if (!ct.includes('application/json')) throw new Error('サーバーがHTMLを返しました（ログイン期限切れの可能性）');
+          var data = await resp.json();
+          if (data.ok) {
+            linkModal.hide();
+            showToast('✓ 紐付けを保存しました', 'success');
+            loadListings();
+          } else {
+            showToast('保存エラー: ' + (data.error || '不明'), 'warn');
+          }
+        } catch (e) {
+          showToast('通信エラー: ' + e, 'warn');
+        } finally {
+          btn.disabled = false;
+          btn.textContent = prevText;
+        }
       });
 
       // テーブル内のイベント委譲
@@ -362,15 +460,32 @@
     // === テーブルクリック委譲 ===
     function handleTableClick(e) {
       var target = e.target;
+      // 🎯 カート価格合わせボタン（#1）
+      var cmBtn = target.closest('.cart-match-btn');
+      if (cmBtn) {
+        e.stopPropagation();
+        matchToCartPrice(cmBtn.dataset.sku, cmBtn);
+        return;
+      }
+      // 🏷️ 追従バッジ（商品別設定モーダルを開く）
+      var fbBtn = target.closest('.follow-badge');
+      if (fbBtn) {
+        e.stopPropagation();
+        var item = allListings.find(function(l) { return String(l.skuId) === String(fbBtn.dataset.sku); });
+        if (item) openLinkModal({skuId: item.skuId, bidding: item.sellerBiddingNo, name: item.source_name || '', url: item.source_url || '', monitoring: item.monitoring ? '1' : '0'});
+        return;
+      }
       // 仕入値編集
       var ce = target.closest('.cost-editable');
       if (ce) {
+        e.stopPropagation();
         editCost(ce, ce.dataset.sku, parseInt(ce.dataset.cost) || 0);
         return;
       }
       // 価格編集
       var pe = target.closest('.price-editable');
       if (pe) {
+        e.stopPropagation();
         var biddingNo = pe.dataset.bidding;
         var skuId = pe.dataset.sku;
         var price = parseInt(pe.dataset.price);
@@ -386,14 +501,22 @@
       // 紐付け/編集ボタン
       var linkBtn = target.closest('[data-action="link"]');
       if (linkBtn) {
+        e.stopPropagation();
         openLinkModal(linkBtn.dataset);
         return;
       }
-      // 履歴ボタン
+      // 履歴ボタン（在庫変化）
       var histBtn = target.closest('[data-action="history"]');
       if (histBtn) {
-        showHistory(histBtn.dataset.title, histBtn.dataset.sku);
+        e.stopPropagation();
+        showHistoryModal(histBtn.dataset.title, histBtn.dataset.sku);
         return;
+      }
+      // #4 行クリックで紐付けモーダル（チェックボックス・リンク等以外）
+      var row = target.closest('tr.row-linkable');
+      if (row && !target.closest('a') && !target.closest('input') && !target.closest('.col-action')) {
+        var ds = row.dataset;
+        openLinkModal({skuId: ds.sku, bidding: ds.bidding, name: ds.linkName || '', url: ds.url || '', monitoring: ds.monitoring || '1'});
       }
     }
 
@@ -562,9 +685,14 @@
         var currency = l.currency || '';
         var title = l.title || '(商品名無し)';
         var colorSize = [l.color, l.size].filter(function(x) { return x; }).join(' / ');
+        // 行クリックで紐付けモーダルを開くための data 属性（#4）
+        var rowAttrs = ' class="row-linkable' + (l.linked ? '' : ' row-unlinked') + '"' +
+          ' data-sku="' + escapeHtml(l.skuId) + '" data-bidding="' + escapeHtml(l.sellerBiddingNo) + '"' +
+          ' data-link-name="' + escapeHtml(l.source_name || title) + '" data-url="' + escapeHtml(l.source_url || '') + '"' +
+          ' data-monitoring="' + (l.monitoring ? '1' : '0') + '"';
 
         // チェックボックス
-        html += '<tr><td class="col-check"><input type="checkbox" class="row-checkbox" data-sku="' + escapeHtml(l.skuId) + '"' + (selectedSkus.has(l.skuId) ? ' checked' : '') + ' style="width:14px;height:14px;cursor:pointer"></td>';
+        html += '<tr' + rowAttrs + '><td class="col-check"><input type="checkbox" class="row-checkbox" data-sku="' + escapeHtml(l.skuId) + '"' + (selectedSkus.has(l.skuId) ? ' checked' : '') + ' style="width:14px;height:14px;cursor:pointer"></td>';
 
         // 画像
         html += '<td class="col-img">';
@@ -588,8 +716,17 @@
         html += '<td class="col-article"><span class="sku-code">' + escapeHtml(l.article_number || '') + '</span></td>';
         // 価格（data属性で委譲）
         html += '<td class="col-price"><div class="price-cell"><span class="price-editable" data-bidding="' + escapeHtml(l.sellerBiddingNo) + '" data-sku="' + escapeHtml(l.globalSkuId) + '" data-price="' + (l.price||0) + '">' + escapeHtml(price) + '</span><span class="currency">' + escapeHtml(currency) + '</span></div></td>';
-        // カート価格
-        html += '<td class="col-cart"><div class="price-cell">' + (l.cart_price ? '¥' + Number(l.cart_price).toLocaleString() : '—') + '</div></td>';
+        // カート価格（#1: 🎯ボタンで個別にカート価格へ合わせる）
+        html += '<td class="col-cart"><div class="price-cell">';
+        if (l.cart_price) {
+          html += '<span title="カート価格">¥' + Number(l.cart_price).toLocaleString() + '</span>';
+          if (l.price && l.price !== l.cart_price) {
+            html += ' <button class="cart-match-btn" data-sku="' + escapeHtml(l.skuId) + '" data-bidding="' + escapeHtml(l.sellerBiddingNo) + '" data-global-sku="' + escapeHtml(l.globalSkuId) + '" data-cart="' + (l.cart_price||0) + '" title="この出品をカート価格 ¥' + Number(l.cart_price).toLocaleString() + ' に変更">🎯</button>';
+          }
+        } else {
+          html += '—';
+        }
+        html += '</div></td>';
         // 仕入値（インライン編集可）
         if (l.linked) {
           html += '<td class="col-cost"><div class="price-cell"><span class="cost-editable" data-sku="' + escapeHtml(l.skuId) + '" data-cost="' + (l.cost_price||0) + '">' + (l.cost_price ? '¥' + Number(l.cost_price).toLocaleString() : '— 設定') + '</span></div></td>';
@@ -630,6 +767,10 @@
         html += l.linked ? '<span class="listing-badge linked">🔗 紐付け済</span>' : '<span class="listing-badge unlinked">未紐付け</span>';
         if (l.monitoring) html += '<span class="listing-badge monitoring">📡 監視中</span>';
         if (l.check_interval > 0) html += '<span class="listing-badge" style="background:var(--surface);color:var(--text-muted)">⏱' + escapeHtml(String(l.check_interval)) + '分</span>';
+        // #7: 商品別最小利益の表示（設定済みのみ・クリックで編集モーダル）
+        if (l.min_profit != null) {
+          html += '<span class="follow-badge" data-sku="' + escapeHtml(l.skuId) + '" title="商品別最小利益（クリックで編集）">利益>=' + escapeHtml(String(l.min_profit)) + '円</span>';
+        }
         html += '</td>';
         // アクション
         html += '<td class="col-action">';
@@ -772,11 +913,57 @@
       renderListings(); updateStats();
     }
 
-    // === C: 履歴モーダル ===
-    async function showHistory(title, skuId) {
-      document.getElementById('historyModalSub').textContent = title;
-      document.getElementById('historyTimeline').innerHTML = '<div style="text-align:center;padding:30px;color:var(--text-faint)"><span class="spinner" style="width:20px;height:20px;"></span><div style="margin-top:8px">読み込み中...</div></div>';
+    // === C: 履歴モーダル（タブ式: 在庫変化 / 取り下げ / 価格追従） ===
+    function switchHistTab(tab) {
+      histTab = tab;
+      document.querySelectorAll('.hist-tab').forEach(function(el) {
+        el.classList.toggle('active', el.dataset.histTab === tab);
+      });
+      document.getElementById('histStockPane').style.display = tab === 'stock' ? '' : 'none';
+      document.getElementById('histDelistPane').style.display = (tab === 'stock') ? 'none' : '';
+      renderDelistTab();
+    }
+
+    async function renderDelistTab() {
+      var pane = document.getElementById('delistTimeline');
+      if (histTab === 'stock') return;
+      pane.innerHTML = '<div style="text-align:center;padding:30px;color:var(--text-faint)"><span class="spinner" style="width:20px;height:20px;"></span><div style="margin-top:8px">読み込み中...</div></div>';
+      try {
+        var resp = await fetch(API_DELIST_HISTORY + '?kind=' + encodeURIComponent(histTab));
+        var data = await resp.json();
+        var list = data.history || [];
+        if (!list.length) {
+          pane.innerHTML = '<div style="text-align:center;padding:30px;color:var(--text-faint)"><div style="font-size:24px;opacity:.5">📭</div><div style="margin-top:8px">' + (histTab === 'delist' ? '自動取り下げの履歴はまだありません' : '価格追従の実行履歴はまだありません') + '</div></div>';
+          return;
+        }
+        var html = '';
+        for (var k = 0; k < list.length; k++) {
+          var h = list[k];
+          var okBadge = h.ok ? '<span style="color:var(--success);font-weight:600">成功</span>' : '<span style="color:var(--danger);font-weight:600">失敗</span>';
+          var body = '';
+          if (h.kind === 'price_follow') {
+            body = '¥' + Number(h.old_price||0).toLocaleString() + ' → <b>¥' + Number(h.new_price||0).toLocaleString() + '</b>（' + (h.target === 'cart' ? 'カート価格' : '市場最低値') + 'へ追従・実質利益 ¥' + Number(h.profit||0).toLocaleString() + '）';
+          } else {
+            body = escapeHtml(h.reason || '') + (h.detail ? ' / ' + escapeHtml(h.detail).substring(0, 60) : '');
+          }
+          html += '<div class="history-item"><span class="history-time">' + escapeHtml(h.timestamp) + '</span><div><span class="history-state">' + okBadge + ' ' + escapeHtml(h.name || h.sku_id || '') + '</span><div class="history-detail">' + body + '</div></div></div>';
+        }
+        pane.innerHTML = html;
+      } catch(e) {
+        pane.innerHTML = '<div style="text-align:center;padding:30px;color:var(--danger)">履歴の取得に失敗: ' + escapeHtml(String(e)) + '</div>';
+      }
+    }
+
+    function showHistoryModal(title, skuId) {
+      // 引数なし＝ヘッダーの📜ボタン（全件表示）
+      document.getElementById('historyModalSub').textContent = title ? title : '全商品の在庫変化・取り下げ・価格追従履歴';
+      switchHistTab('stock');
+      loadStockHistory(title);
       historyModal.show();
+    }
+
+    async function loadStockHistory(title) {
+      document.getElementById('historyTimeline').innerHTML = '<div style="text-align:center;padding:30px;color:var(--text-faint)"><span class="spinner" style="width:20px;height:20px;"></span><div style="margin-top:8px">読み込み中...</div></div>';
       try {
         var resp = await fetch(API_HISTORY);
         var data = await resp.json();
@@ -815,6 +1002,22 @@
       document.getElementById('linkUrl').value = ds.url || '';
       document.getElementById('linkEnabled').checked = ds.monitoring !== '0';
       document.getElementById('unlinkBtn').style.display = ds.url ? '' : 'none';
+      // 仕入値・最小利益（既存リンクから）
+      var item = allListings.find(function(l) { return String(l.skuId) === String(ds.skuId); });
+      if (item) {
+        document.getElementById('linkCostPrice').value = item.cost_price || '';
+        document.getElementById('linkMinProfit').value = (item.min_profit != null) ? item.min_profit : '';
+      } else {
+        document.getElementById('linkCostPrice').value = '';
+        document.getElementById('linkMinProfit').value = '';
+      }
+      // モーダル見出しにSKUを表示
+      var sub = document.querySelector('#linkModal .modal-sub');
+      if (sub && ds.skuId) {
+        var t = '';
+        if (item && item.title) t = item.title.substring(0, 40);
+        sub.textContent = 'SKU ' + ds.skuId + (t ? ' / ' + t : '');
+      }
       linkModal.show();
     }
 
@@ -950,6 +1153,90 @@
         }).catch(function() { if (attempts < 120) setTimeout(poll, 2000); });
       }
       setTimeout(poll, 2000);
+    }
+
+    // === #1 個別カート価格合わせ ===
+    async function matchToCartPrice(skuId, btn) {
+      var item = allListings.find(function(l) { return String(l.skuId) === String(skuId); });
+      if (!item) { showToast('SKU情報が見つかりません', 'warn'); return; }
+      var dest = parseInt(btn.dataset.cart) || item.cart_price || 0;
+      if (!dest) { showToast('カート価格が取得できていません', 'warn'); return; }
+      if (item.price && item.price <= dest) { showToast('すでにカート価格以下です', 'info'); return; }
+      var cost = item.cost_price || 0;
+      var netMsg = '';
+      var net = Math.round(dest * 0.94 - 1500 - cost);
+      if (cost) {
+        netMsg = '\\n実質利益: ¥' + net.toLocaleString() + (net < 0 ? ' ⚠ マイナス' : '');
+      }
+      if (!confirm('この出品をカート価格に合わせます\\n\\n' + item.title.substring(0,40) + '\\n¥' + Number(item.price).toLocaleString() + ' → ¥' + Number(dest).toLocaleString() + netMsg + '\\n\\n変更しますか？')) return;
+      btn.disabled = true;
+      try {
+        var fd = new FormData();
+        fd.append('seller_bidding_no', item.sellerBiddingNo);
+        fd.append('global_sku_id', item.globalSkuId);
+        fd.append('price', dest);
+        var resp = await fetch(API_UPDATE_PRICE, {method:'POST', body:fd});
+        var data = await resp.json();
+        if (data.ok) {
+          item.price = dest;
+          showToast('✓ カート価格 ¥' + Number(dest).toLocaleString() + ' に変更しました', 'success');
+          renderListings();
+        } else {
+          showToast('変更失敗: ' + (data.error || '不明'), 'warn');
+          btn.disabled = false;
+        }
+      } catch(e) {
+        showToast('通信エラー: ' + e, 'warn');
+        btn.disabled = false;
+      }
+    }
+
+    // === #9 取り下げ済み一覧モーダル ===
+    async function showDelisted() {
+      document.getElementById('delistedArea').innerHTML = '<div style="text-align:center;padding:30px;color:var(--text-faint)"><span class="spinner" style="width:20px;height:20px;"></span><div style="margin-top:8px">読み込み中...</div></div>';
+      delistedModal.show();
+      try {
+        var resp = await fetch(API_DELISTED_LISTINGS);
+        var data = await resp.json();
+        if (data.error) {
+          document.getElementById('delistedArea').innerHTML = '<div class="error-banner">❌ ' + escapeHtml(data.error) + '</div>';
+          return;
+        }
+        var rows = data.listings || [];
+        document.getElementById('delistedSub').textContent =
+          '出品中以外（売却済・取り下げ済み）: ' + data.count + '件 / 自動取り下げ ' + data.auto_count + '件';
+        if (!rows.length) {
+          document.getElementById('delistedArea').innerHTML = '<div style="text-align:center;padding:30px;color:var(--text-faint)"><div style="font-size:24px;opacity:.5">📭</div><div style="margin-top:8px">取り下げ済みの出品はありません</div></div>';
+          return;
+        }
+        var html = '<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr>' +
+          '<th style="padding:6px 8px;text-align:left;border-bottom:1px solid var(--border)">商品</th>' +
+          '<th style="padding:6px 8px;text-align:right;border-bottom:1px solid var(--border)">価格</th>' +
+          '<th style="padding:6px 8px;text-align:center;border-bottom:1px solid var(--border)">区分</th>' +
+          '<th style="padding:6px 8px;text-align:left;border-bottom:1px solid var(--border)">取り下げ時刻/状態</th>' +
+          '</tr></thead><tbody>';
+        for (var i = 0; i < rows.length; i++) {
+          var r = rows[i];
+          var badge = r.auto_delisted
+            ? '<span class="listing-badge" style="background:#fef9c3;color:#a16207">🤖 自動取下げ</span>'
+            : '<span class="listing-badge unlinked">手動/売却</span>';
+          html += '<tr' + (r.auto_delisted ? ' class="delist-row-auto"' : '') + '>' +
+            '<td style="padding:7px 8px;border-bottom:1px solid var(--border)">' +
+            (r.source_url ? '<a href="' + escapeHtml(r.source_url) + '" target="_blank">' : '') +
+            escapeHtml((r.title || '(商品名無し)').substring(0, 44)) +
+            (r.source_url ? ' ↗</a>' : '') +
+            '<div class="sku-code">' + escapeHtml(r.skuId) + '</div></td>' +
+            '<td style="padding:7px 8px;text-align:right;border-bottom:1px solid var(--border);font-weight:600">¥' + Number(r.price||0).toLocaleString() + '</td>' +
+            '<td style="padding:7px 8px;text-align:center;border-bottom:1px solid var(--border)">' + badge + '</td>' +
+            '<td style="padding:7px 8px;border-bottom:1px solid var(--border);font-size:11px;color:var(--text-muted)">' +
+            (r.delisted_at ? escapeHtml(r.delisted_at) + '<br>' + escapeHtml(r.delist_reason || '') : 'status=' + escapeHtml(String(r.tradeStatus)) + '/' + escapeHtml(String(r.tradeSubStatus))) +
+            '</td></tr>';
+        }
+        html += '</tbody></table>';
+        document.getElementById('delistedArea').innerHTML = html;
+      } catch(e) {
+        document.getElementById('delistedArea').innerHTML = '<div class="error-banner">❌ 通信エラー: ' + escapeHtml(String(e)) + '</div>';
+      }
     }
 
     // === トースト通知 ===
