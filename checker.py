@@ -290,11 +290,23 @@ def _rakuten_parse(html):
                     "deliveryMessage": "",
                 }
 
+    # サイズラベル → variantId マップ（size_pattern「25.0cm」等からの逆引き用）
+    size_to_vids = {}
+    for e in sku_list:
+        if not isinstance(e, dict):
+            continue
+        vid = e.get("variantId")
+        for sv in e.get("selectorValues") or []:
+            sv = str(sv or "").strip()
+            if vid and ("cm" in sv.lower() or sv.upper().rstrip() in ("XS", "S", "M", "L", "XL", "XXL")):
+                size_to_vids.setdefault(sv, []).append(vid)
+
     return {
         "name": name,
         "selectors": selectors,
         "first_variant": first,
         "vid_stocks": vid_stocks,
+        "size_to_vids": size_to_vids,
     }
 
 
@@ -394,21 +406,35 @@ def check_rakuten(url, size):
             url_vid = qs[k][0]
             break
 
+    # まず静的HTMLで取得を試す（楽天は itemInfoSku がSSRに埋め込まれている・Playwright不要で高速）
+    html = ""
     try:
-        html = _rakuten_render(url)
-    except ImportError:
-        return UNKNOWN, "Playwrightが未インストール（楽天監視には必要）"
-    except Exception as e:
-        return UNKNOWN, "楽天ページ取得失敗: {}".format(e)
-
-    data = _rakuten_parse(html)
+        html = fetch_html_auto(url)
+    except Exception:
+        html = ""
+    data = _rakuten_parse(html) if html else None
+    if not data:
+        # 静的取得で解析できない場合のみ Playwright でレンダリング
+        try:
+            html = _rakuten_render(url)
+        except ImportError:
+            return UNKNOWN, "Playwrightが未インストール（楽天監視には必要）"
+        except Exception as e:
+            return UNKNOWN, "楽天ページ取得失敗: {}".format(e)
+        data = _rakuten_parse(html)
     if not data:
         return UNKNOWN, "楽天商品データの解析に失敗"
 
     vid_stocks = data.get("vid_stocks", {})
     first = data.get("first_variant", {})
+    size_to_vids = data.get("size_to_vids") or {}
 
     target_vid = url_vid
+    if not target_vid and size and size_to_vids:
+        # size_pattern（25.0cm等）から variantId を逆引き
+        cands = size_to_vids.get(size) or []
+        if cands:
+            target_vid = cands[0]
     if not target_vid and first.get("variantId"):
         target_vid = first.get("variantId")
     if (not target_vid or target_vid not in vid_stocks) and len(vid_stocks) == 1:
