@@ -1192,11 +1192,11 @@ def external_auto_link_api():
                     if product_code:
                         break
             if not product_code:
-                # ページタイトルやheadlineから品番抽出（例: JZ8731 / 3MG10064852）
-                # パターン: 英字始まり品番（JZ8731等）or 数字始まり品番（3MG10064852等）
-                mm = _re.search(r"\b([A-Z]{1,3}\d{4,6}(?:-[A-Z0-9]+)?)\b", page_title)
+                # ページタイトルやheadlineから品番抽出（例: JZ8731 / 3MG10064852 / 1093A234.101）
+                # パターン: 英字始まり品番 or 数字始まり品番（4桁数字も許可・ドット区切りも対応）
+                mm = _re.search(r"\b([A-Z]{1,3}\d{4,6}(?:[-.][A-Z0-9]+)?)\b", page_title)
                 if not mm:
-                    mm = _re.search(r"\b(\d{1,3}[A-Z]{1,4}\d{3,8}(?:-[A-Z0-9]+)?)\b", page_title, _re.I)
+                    mm = _re.search(r"\b(\d{1,4}[A-Z]{1,4}\d{3,8}(?:[-.][A-Z0-9]+)?)\b", page_title, _re.I)
                     if mm:
                         product_code = mm.group(1).upper()
                 if mm:
@@ -1228,9 +1228,10 @@ def external_auto_link_api():
             except Exception:
                 pass
         if not product_code:
-            # URL末尾から品番抽出フォールバック（例: /wf945-jz8731.html / /C9875.html）
-            mm = _re.search(r"/([A-Za-z0-9]+-[A-Za-z0-9]+|[A-Z]{1,3}\d{3,6})(?:-[A-Za-z0-9]+)?\.html", url)
-            if mm:
+            # URL末尾から品番抽出フォールバック
+            # （例: /wf945-jz8731.html / /C9875.html / 楽天は「/店舗/1093a234-101」のように.html無し）
+            mm = _re.search(r"/([A-Za-z0-9]+-[A-Za-z0-9]+|[A-Z]{1,3}\d{3,6})(?:-[A-Za-z0-9]+)?(?:\.html)?/?$", url)
+            if mm and _re.search(r"[A-Za-z]", mm.group(1)) and _re.search(r"\d", mm.group(1)) and len(mm.group(1)) >= 6:
                 product_code = mm.group(1).upper()
         if not variants and m and "yahoo.co.jp" in url.lower():
             # Yahooだがバリアント抽出できず: 価格だけでも保存
@@ -1426,8 +1427,12 @@ def external_auto_link_api():
         pc_u = (product_code or "").upper()
         pc_tokens = set(t for t in pc_u.replace("_", "-").split("-") if len(t) >= 4)
         ia_tokens = set(t for t in item_article.replace("_", "-").split("-") if len(t) >= 4)
+        # 記号（ドット等）を除いた正規化比較（楽天「1093A234.101」vs POIZON「1093A234-101」等）
+        pc_norm = _re2.sub(r"[^A-Z0-9]", "", pc_u)
+        ia_norm = _re2.sub(r"[^A-Z0-9]", "", item_article)
         article_match = bool(pc_u and item_article and (
             pc_u == item_article or (pc_tokens & ia_tokens)
+            or (len(pc_norm) >= 8 and pc_norm == ia_norm)
         ))
         if article_match:
             # POIZON出品側の全規格サイズ（skuManySizeInfos: JP/US/EU/KR）を取得。
