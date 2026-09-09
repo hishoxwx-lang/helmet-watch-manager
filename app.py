@@ -1324,8 +1324,67 @@ def external_auto_link_api():
             eu = mm.group(1)
         return us, cm, eu
 
-    def _size_equivalent(a, b):
-        """サイズ照合（US/CM/EU/SML表記の違いを吸収）。生のサイズ文字列を受け取る。"""
+    def _norm_num(s):
+        """数値文字列の末尾 .0 を除去（25.0 → 25）。"""
+        s = str(s or "").strip()
+        if s.endswith(".0"):
+            s = s[:-2]
+        return s
+
+    def _size_keys(raw):
+        """サイズ文字列を規格キー集合（us:/cm:/eu:）に変換。"""
+        s = str(raw or "").strip().upper().replace("サイズ", "").replace("SIZE", "").replace(" ", "")
+        keys = set()
+        if not s or not any(ch.isdigit() for ch in s):
+            return keys
+        us, cm, eu = _parse_size_tokens(raw)
+        if us:
+            keys.add("us:" + us)
+            if us in _US_TO_EU:
+                keys.add("eu:" + _US_TO_EU[us])
+        if cm:
+            keys.add("cm:" + cm)
+            if cm in _CM_TO_EU:
+                keys.add("eu:" + _CM_TO_EU[cm])
+        if eu:
+            keys.add("eu:" + eu)
+        bare = _norm_num(s)
+        if _re2.match(r"^\d{1,3}(\.\d)?$", bare):
+            # 裸数字はEU表記とみなす（従来挙動と同じ）
+            keys.add("eu:" + bare)
+        return keys
+
+    def _item_size_keys(item):
+        """POIZON出品の全規格サイズ（skuManySizeInfos）を規格キー集合で返す。"""
+        keys = set()
+        for info in item.get("regionSalePvInfoList", []):
+            if info.get("name") not in ("サイズ", "Size"):
+                continue
+            for ms in info.get("skuManySizeInfos", []):
+                key = str(ms.get("sizeKey") or "").upper()
+                val = _norm_num(str(ms.get("sizeValue") or "").strip().upper())
+                if not val:
+                    continue
+                if key.startswith("US"):
+                    keys.add("us:" + val)
+                elif key == "EU":
+                    keys.add("eu:" + val)
+                elif key == "JP":
+                    keys.add("cm:" + val)  # JP表記はcm
+                elif key == "KR":
+                    # KRはmm表記（250 → 25cm）
+                    try:
+                        if 100 <= float(val) < 400 and float(val) == int(float(val)):
+                            keys.add("cm:" + _norm_num(str(float(val) / 10)))
+                    except ValueError:
+                        pass
+        return keys
+
+    def _size_equivalent(a, b, b_extra_keys=None):
+        """サイズ照合（US/CM/EU/SML表記の違いを吸収）。生のサイズ文字列を受け取る。
+
+        b_extra_keys: POIZON出品側の追加規格キー（skuManySizeInfos由来の us:/cm:/eu:）。
+        """
         sa = str(a or "").strip().upper()
         sb = str(b or "").strip().upper()
         if not sa or not sb:
@@ -1337,25 +1396,11 @@ def external_auto_link_api():
             return na == nb
         if not any(ch.isdigit() for ch in na) or not any(ch.isdigit() for ch in nb):
             return False
-        a_us, a_cm, a_eu = _parse_size_tokens(a)
-        b_us, b_cm, b_eu = _parse_size_tokens(b)
-
-        def _to_eu_set(us, cm, eu, raw):
-            s = set()
-            if eu:
-                s.add(eu)
-            if us and us in _US_TO_EU:
-                s.add(_US_TO_EU[us])
-            if cm and cm in _CM_TO_EU:
-                s.add(_CM_TO_EU[cm])
-            mm = _re2.match(r"^(\d{2}(?:\.\d)?)$", str(raw or "").strip().upper().replace("サイズ", "").replace("SIZE", "").replace(" ", ""))
-            if mm and not us:
-                s.add(mm.group(1))
-            return s
-
-        ea = _to_eu_set(a_us, a_cm, a_eu, a)
-        eb = _to_eu_set(b_us, b_cm, b_eu, b)
-        return bool(ea & eb)
+        ka = _size_keys(a)
+        kb = _size_keys(b)
+        if b_extra_keys:
+            kb = kb | set(b_extra_keys)
+        return bool(ka & kb)
 
     matched = []
     for item in result:
@@ -1368,6 +1413,7 @@ def external_auto_link_api():
         import re as _re2
         item_article = _re2.sub(r"[^A-Z0-9\-]", "", item_article)
         size, color = _size_of(item)
+        size_display = size  # 表示用（POIZON側表記・EU等）
         spu_title = item.get("spuTitle", "")
 
         # 照合条件: 品番一致が前提。その上でサイズ展開と照合。
@@ -1384,6 +1430,9 @@ def external_auto_link_api():
             pc_u == item_article or (pc_tokens & ia_tokens)
         ))
         if article_match:
+            # POIZON出品側の全規格サイズ（skuManySizeInfos: JP/US/EU/KR）を取得。
+            # 表示用localValue（EU等1種）だけだとブランド固有cm↔EU対応（ASICS等）で不一致になるため。
+            item_extra_keys = _item_size_keys(item)
             # カラーコード型バリアント（Coach等）: 全バリアントがカラーのみ持つ場合、
             # カラー一致を必須条件にする（品番+カラーの両方一致でのみヒット）
             color_only_variants = [v for v in variants if str(v.get("color") or "").strip() and not str(v.get("size") or "").strip()]
@@ -1412,6 +1461,14 @@ def external_auto_link_api():
                     # サイズ一致（US/CM/EU表記の違いは _size_equivalent で吸収）
                     if vs and ps and _size_equivalent(vs, ps):
                         hit = True
+                        # size_patternは仕入先ページの表記を保存（checkerのページ内照合で一致必須のため）
+                        # 例: POIZON表示「39」でも仕入先「25.0cm」でヒットしたら「25.0cm」を保存
+                        size = vs
+                        break
+                    # 全規格サイズ（skuManySizeInfos）での照合: 仕入先cm表記 vs POIZON JP/US/KR等
+                    if vs and item_extra_keys and _size_equivalent(vs, ps, b_extra_keys=item_extra_keys):
+                        hit = True
+                        size = vs
                         break
                     # バリアントにサイズ情報なし or POIZON側にサイズなし → 品番一致で全SKU対象
                     if not vs or not ps:
@@ -1423,7 +1480,8 @@ def external_auto_link_api():
 
         if hit:
             matched.append({"sku_id": sku_id, "size": size, "color": color,
-                            "name": spu_title, "article": item_article})
+                            "name": spu_title, "article": item_article,
+                            "size_display": size_display})
 
     if not matched:
         hint = ""
@@ -1489,7 +1547,7 @@ def external_auto_link_api():
                 "image_url": "",
                 "poizon_sku_id": sid,
             })
-        linked.append({"sku_id": sid, "size": m_["size"], "color": m_["color"], "name": label,
+        linked.append({"sku_id": sid, "size": m_.get("size_display") or m_["size"], "color": m_["color"], "name": label,
                        "cost_price": links[sid].get("cost_price", 0)})
 
     save_poizon_links(links)
