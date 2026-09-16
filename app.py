@@ -1268,6 +1268,30 @@ def external_auto_link_api():
                             cost_price = min(_costs)
             except Exception:
                 pass
+        if not product_code and "parrmark.co.jp" in url.lower():
+            # Parr Mark（アウトドアショップ・パーマーク・Shift_JIS静的HTML）:
+            # SKU表（カラー×サイズ×価格×品切れ）から品番とバリアントを抽出
+            try:
+                from checker import _parrmark_parse
+                pdata = _parrmark_parse(html)
+                if pdata:
+                    product_code = pdata.get("code", "")
+                    if not variants:
+                        for v in pdata.get("variants", [])[:40]:
+                            variants.append({
+                                "size": v.get("size", ""),
+                                "color": v.get("color", ""),
+                                "label": "{} {}".format(v.get("color", ""), v.get("size", "")).strip(),
+                                "cost": int(v.get("price") or 0),
+                                "in_stock": bool(v.get("in_stock")),
+                            })
+                    if not cost_price and variants:
+                        _costs = [int(v.get("cost") or 0) for v in variants]
+                        _costs = [c for c in _costs if c > 0]
+                        if _costs:
+                            cost_price = min(_costs)
+            except Exception:
+                pass
         if not product_code:
             # URL末尾から品番抽出フォールバック（クエリ文字列・末尾スラッシュを除去してから）
             # （例: /wf945-jz8731.html / /C9875.html / 楽天は「/店舗/1093a234-101」のように.html無し）
@@ -1453,6 +1477,7 @@ def external_auto_link_api():
         return bool(ka & kb)
 
     matched = []
+    color_pattern = ""
     for item in result:
         sku_id = str(item.get("skuId", ""))
         if not sku_id:
@@ -1506,6 +1531,18 @@ def external_auto_link_api():
                     vs = str(v.get("size") or "").strip()
                     ps = str(size or "").strip()
                     vc = str(v.get("color") or "").strip().upper()
+                    # カラー+サイズ両方のバリアント（Parr Mark等SKU表サイト）:
+                    # カラー一致＋サイズ一致でヒット（color_patternにカラーを保存し
+                    # checkerのカラー別判定で使用）。カラー不一致なら後続のサイズ照合へ。
+                    if vs and vc:
+                        _item_color_norm = _re2.sub(r"[^A-Z0-9]", "", (color or "").upper())
+                        _vc_norm = _re2.sub(r"[^A-Z0-9]", "", vc)
+                        if (_vc_norm and _vc_norm in _item_color_norm) and (
+                                _size_equivalent(vs, ps) or _size_equivalent(vs, ps, b_extra_keys=item_extra_keys)):
+                            hit = True
+                            size = vs
+                            color_pattern = vc
+                            break
                     # カラー一致（サイズ+カラー両方ある商品）: カラーコードがPOIZON品番/表示に含まれるか
                     if vc and not vs:
                         item_color = (color or "").upper()
@@ -1542,7 +1579,9 @@ def external_auto_link_api():
         if hit:
             matched.append({"sku_id": sku_id, "size": size, "color": color,
                             "name": spu_title, "article": item_article,
-                            "size_display": size_display})
+                            "size_display": size_display,
+                            "color_pattern": color_pattern})
+            color_pattern = ""
 
     if not matched:
         hint = ""
@@ -1603,7 +1642,7 @@ def external_auto_link_api():
             sku_to_product[sid]["url"] = url_clean
             sku_to_product[sid]["enabled"] = True
         else:
-            products.append({
+            _new_p = {
                 "id": next_product_id(products),
                 "name": label or "POIZON:{}".format(sid),
                 "url": url_clean,
@@ -1612,7 +1651,10 @@ def external_auto_link_api():
                 "enabled": True,
                 "image_url": "",
                 "poizon_sku_id": sid,
-            })
+            }
+            if m_.get("color_pattern"):
+                _new_p["color_pattern"] = m_["color_pattern"]
+            products.append(_new_p)
         linked.append({"sku_id": sid, "size": m_.get("size_display") or m_["size"], "color": m_["color"], "name": label,
                        "cost_price": links[sid].get("cost_price", 0)})
 

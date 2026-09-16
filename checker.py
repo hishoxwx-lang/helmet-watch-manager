@@ -1075,6 +1075,66 @@ def extract_current_price(html):
     return 0
 
 
+def _parrmark_parse(html):
+    """Parr Mark（parrmark.co.jp・Shift_JIS・ASP静的HTML）のSKU表を解析。
+
+    構造: カラー毎にフォームが分かれ、その中の<table>行が
+    「カラー×サイズ×価格×品切れ/数量」のSKU単位。
+    戻り値: {"code": 品番, "variants": [{color, size, price, in_stock}]} または None
+    """
+    rows = re.split(r"<tr\s*>", html)
+    variants = []
+    code = ""
+    mcode = re.search(r"text-align:center[^>]*>([A-Z]\d{6,})</td>", html)
+    if mcode:
+        code = mcode.group(1)
+    for r in rows:
+        mc = re.search(r'name="カラー\d+" value="([^"]*)"', r)
+        ms = re.search(r'name="サイズ\d+" value="([^"]*)"', r)
+        if not mc or not ms:
+            continue
+        color = mc.group(1).strip()
+        size = ms.group(1).strip()
+        prices = re.findall(r"￥([\d,]+)", r)
+        price = 0
+        if prices:
+            try:
+                # 最後のセール価格（税込）: 行内の価格は 定価/税込定価/セール/税込セール の並び
+                price = int(prices[-1].replace(",", ""))
+            except ValueError:
+                price = 0
+        in_stock = "品切れ" not in r
+        variants.append({"color": color, "size": size, "price": price, "in_stock": in_stock})
+    if not variants:
+        return None
+    return {"code": code, "variants": variants}
+
+
+def check_parrmark(url, product):
+    """Parr Mark: SKU表（カラー×サイズ×品切れ）でサイズ+カラー別在庫判定。"""
+    size = (product.get("size_pattern") or "").strip()
+    try:
+        color = (product.get("color_pattern") or "").strip()
+    except Exception:
+        color = ""
+    try:
+        html = fetch_html_auto(url)
+    except Exception as e:
+        return UNKNOWN, "ページ取得失敗: {}".format(e)
+    data = _parrmark_parse(html)
+    if not data:
+        return UNKNOWN, "SKU表の解析に失敗"
+    for v in data["variants"]:
+        if size and v["size"].upper() != size.upper():
+            continue
+        if color and v["color"].upper() != color.upper():
+            continue
+        if v["in_stock"]:
+            return IN_STOCK, "{} {}: 販売中（￥{:,}）".format(v["color"], v["size"], v["price"] or 0)
+        return SOLD_OUT, "{} {}: 品切れ".format(v["color"], v["size"])
+    return UNKNOWN, "該当サイズ/カラーの行が見つかりません（{}/{}）".format(size, color)
+
+
 def check_product(product, config=None):
     """
     戻り値: (state, detail)
@@ -1105,6 +1165,10 @@ def check_product(product, config=None):
         except Exception as e:
             return UNKNOWN, "取得失敗: {}".format(e)
         return check_yahoo(html, size_pattern)
+
+    # Parr Mark（アウトドアショップ・パーマーク）: SKU表でサイズ+カラー別判定
+    if "parrmark.co.jp" in url:
+        return check_parrmark(url, product)
 
     # その他すべてのサイト: 汎用判定エンジン
     return check_generic(url, product, config)
@@ -1138,13 +1202,64 @@ def notify_poizon_delist(product, config, detail):
     詳細は opencodetest/docs/STOCK_DELIST_DESIGN.md 参照。
     """
     sku_id = str(product.get("poizon_sku_id") or "").strip()
-    url = (config.get("poizon_delist_url") or "").strip()
-    token = (config.get("poizon_delist_token") or "").strip()
     if not sku_id:
         print("    -> (poizon_sku_id 未設定: POIZON連動スキップ)")
         return False
+
+    # 【直接取り下げ方式（2026-09-16〜）】旧webhook（poizon_delist_url: localhost:5050）は
+    # 受け手が無く死んでいるため、POIZON API（apiId=26 cancel_listing）を直接呼ぶ。
+    # poizon_api_id/key + seller_bidding_no（出品一覧から引く）が必要。
+    app_key = (config.get("poizon_api_id") or "").strip()
+    app_secret = (config.get("poizon_api_key") or "").strip()
+    delist_enabled = bool(config.get("poizon_direct_delist", True))
+    if app_key and app_secret and delist_enabled:
+        try:
+            from poizon_api import get_active_listings, cancel_listing
+            listings = get_active_listings(config)
+            bidding_no = ""
+            if isinstance(listings, list):
+                for it in listings:
+                    if str(it.get("skuId")) == sku_id:
+                        bidding_no = str(it.get("sellerBiddingNo") or "")
+                        break
+            if not bidding_no:
+                print("    -> 取り下げ対象の出品が見つかりません（SKU:{}・既に取り下げ済みの可能性）".format(sku_id))
+                append_delist_history({
+                    "kind": "delist", "sku_id": sku_id, "name": product.get("name", "?"),
+                    "url": product.get("url", ""), "detail": detail,
+                    "reason": "仕入先売切れ検知", "ok": False,
+                    "response_message": "出品が見つからず（既に取り下げ済みの可能性）",
+                    "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                })
+                return False
+            resp = cancel_listing(app_key, app_secret, bidding_no)
+            ok = isinstance(resp, dict) and str(resp.get("code")) == "200"
+            msg = str(resp.get("msg") or resp.get("message") or "")[:200] if isinstance(resp, dict) else str(resp)[:200]
+            print("    -> POIZON直接取り下げ {}: {} {}".format("OK" if ok else "FAIL", bidding_no, msg))
+            append_delist_history({
+                "kind": "delist", "sku_id": sku_id, "name": product.get("name", "?"),
+                "url": product.get("url", ""), "detail": detail,
+                "reason": "仕入先売切れ検知（API直接）",
+                "ok": ok, "response_message": msg,
+                "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            })
+            return ok
+        except Exception as e:
+            print("    -> POIZON直接取り下げエラー: {}".format(e))
+            # 履歴だけ残して旧webhookにもフォールバックしない（受け手が無いため）
+            append_delist_history({
+                "kind": "delist", "sku_id": sku_id, "name": product.get("name", "?"),
+                "url": product.get("url", ""), "detail": detail,
+                "reason": "仕入先売切れ検知（API直接）", "ok": False,
+                "response_message": "エラー: {}".format(str(e)[:150]),
+                "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            })
+            return False
+
+    url = (config.get("poizon_delist_url") or "").strip()
+    token = (config.get("poizon_delist_token") or "").strip()
     if not url or not token:
-        print("    -> (poizon_delist_url/token 未設定: POIZON連動スキップ)")
+        print("    -> (poizon_api_id/key 未設定: POIZON連動スキップ)")
         return False
     try:
         r = requests.post(
