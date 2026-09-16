@@ -291,15 +291,30 @@ def _rakuten_parse(html):
                 }
 
     # サイズラベル → variantId マップ（size_pattern「25.0cm」等からの逆引き用）
+    # + バリアント一覧（サイズ/カラー/価格）: auto_linkのSKU自動紐付けで使用
     size_to_vids = {}
+    variants_out = []
     for e in sku_list:
         if not isinstance(e, dict):
             continue
         vid = e.get("variantId")
+        v_size = ""
+        v_color = ""
         for sv in e.get("selectorValues") or []:
             sv = str(sv or "").strip()
-            if vid and ("cm" in sv.lower() or sv.upper().rstrip() in ("XS", "S", "M", "L", "XL", "XXL")):
-                size_to_vids.setdefault(sv, []).append(vid)
+            is_size = ("cm" in sv.lower() or sv.upper() in ("XS", "S", "M", "L", "XL", "XXL")
+                       or re.match(r"^EU\d", sv.upper()) or re.match(r"^US\.?\d", sv.upper()))
+            if is_size and not v_size:
+                v_size = sv
+                if vid:
+                    size_to_vids.setdefault(sv, []).append(vid)
+            elif not v_color:
+                v_color = sv
+        try:
+            v_price = int(e.get("taxIncludedPrice") or 0)
+        except Exception:
+            v_price = 0
+        variants_out.append({"size": v_size, "color": v_color, "price": v_price})
 
     return {
         "name": name,
@@ -307,6 +322,7 @@ def _rakuten_parse(html):
         "first_variant": first,
         "vid_stocks": vid_stocks,
         "size_to_vids": size_to_vids,
+        "variants": variants_out,
     }
 
 

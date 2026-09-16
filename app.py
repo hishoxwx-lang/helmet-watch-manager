@@ -1227,10 +1227,52 @@ def external_auto_link_api():
                     })
             except Exception:
                 pass
+        if not product_code and "rakuten.co.jp" in url.lower():
+            # 楽天市場: itemInfoSku が静的HTML（EUC-JP）にSSR埋め込みされている。
+            # - 品番: attributes「メーカー型番」(例: EE9033) / newItemNumber (例: EE9033_100)
+            # - バリアント: sku[].selectorValues = [カラー, サイズ] × taxIncludedPrice
+            try:
+                from checker import _rakuten_parse
+                data = _rakuten_parse(html)
+                if data:
+                    if not page_title:
+                        page_title = data.get("name", "")
+                    if not variants and data.get("variants"):
+                        for v in data["variants"][:40]:
+                            variants.append({
+                                "size": str(v.get("size") or ""),
+                                "color": str(v.get("color") or ""),
+                                "label": (str(v.get("color") or "") + " " + str(v.get("size") or "")).strip(),
+                                "cost": int(v.get("price") or 0),
+                            })
+                    # 品番: メタのメーカー型番 → itemInfoSku.newItemNumber → manageNumber末尾
+                    mmrk = _re.search(r'"title":"メーカー型番","value":"([^"<]+)"', html)
+                    if mmrk:
+                        product_code = mmrk.group(1).strip().upper()
+                    if not product_code:
+                        _nin = _re.search(r'"newItemNumber":"([^"]+)"', html)
+                        if _nin:
+                            product_code = _nin.group(1).split("_")[0].strip().upper()
+                    if not product_code:
+                        # manageNumber「ften-ee9033」→ 末尾セグメント（6文字以上で英数字両方）
+                        _mn = _re.search(r'"manageNumber":"([^"]+)"', html)
+                        if _mn:
+                            _cand = _mn.group(1).split("-")[-1].strip().upper()
+                            if len(_cand) >= 6 and _re.search(r"[A-Z]", _cand) and _re.search(r"\d", _cand):
+                                product_code = _cand
+                    # 仕入値フォールバック: バリアント最小価格
+                    if not cost_price and variants:
+                        _costs = [int(v.get("cost") or 0) for v in variants]
+                        _costs = [c for c in _costs if c > 0]
+                        if _costs:
+                            cost_price = min(_costs)
+            except Exception:
+                pass
         if not product_code:
-            # URL末尾から品番抽出フォールバック
+            # URL末尾から品番抽出フォールバック（クエリ文字列・末尾スラッシュを除去してから）
             # （例: /wf945-jz8731.html / /C9875.html / 楽天は「/店舗/1093a234-101」のように.html無し）
-            mm = _re.search(r"/([A-Za-z0-9]+-[A-Za-z0-9]+|[A-Z]{1,3}\d{3,6})(?:-[A-Za-z0-9]+)?(?:\.html)?/?$", url)
+            _url_clean = _re.sub(r"[?#].*$", "", url)
+            mm = _re.search(r"/([A-Za-z0-9]+-[A-Za-z0-9]+|[A-Z]{1,3}\d{3,6})(?:-[A-Za-z0-9]+)?(?:\.html)?/?$", _url_clean)
             if mm and _re.search(r"[A-Za-z]", mm.group(1)) and _re.search(r"\d", mm.group(1)) and len(mm.group(1)) >= 6:
                 product_code = mm.group(1).upper()
         if not variants and m and "yahoo.co.jp" in url.lower():
@@ -1400,6 +1442,13 @@ def external_auto_link_api():
         ka = _size_keys(a)
         kb = _size_keys(b)
         if b_extra_keys:
+            # 両側ともcm(JP)規格を持つ場合、汎用cm→EU変換表のズレで誤ヒットしないよう
+            # cm同士の直接一致のみで判定する（例: 楽天25cm ↔ POIZON JP25 が正解なのに
+            # 変換表の 24.5cm→EU40 が先にヒットする事故の防止）
+            cm_a = {k for k in ka if k.startswith("cm:")}
+            cm_b = {k for k in (kb | set(b_extra_keys)) if k.startswith("cm:")}
+            if cm_a and cm_b:
+                return bool(cm_a & cm_b)
             kb = kb | set(b_extra_keys)
         return bool(ka & kb)
 
@@ -1463,16 +1512,23 @@ def external_auto_link_api():
                         if vc in item_article or (item_color and vc in item_color):
                             hit = True
                             break
+                    # 全規格サイズ（skuManySizeInfos）での照合を先に試す:
+                    # 仕入先cm表記 vs POIZON JP(cm)の直接一致が最優先。
+                    # （素の照合を先にすると汎用cm→EU変換表のズレで
+                    #   「24.5cm→EU40」が「JP25cm」のSKUに誤ヒットする）
+                    item_has_cm = any(k.startswith("cm:") for k in item_extra_keys)
+                    if vs and item_extra_keys and _size_equivalent(vs, ps, b_extra_keys=item_extra_keys):
+                        hit = True
+                        size = vs
+                        break
                     # サイズ一致（US/CM/EU表記の違いは _size_equivalent で吸収）
-                    if vs and ps and _size_equivalent(vs, ps):
+                    # ※POIZON側がJP(cm)規格を持つ場合は上の直接照合で確定するため、
+                    #   汎用変換表（24.5cm→EU40等）経由のこの照合はスキップする
+                    #   （変換表のズレによる誤ヒット防止）
+                    if vs and ps and not item_has_cm and _size_equivalent(vs, ps):
                         hit = True
                         # size_patternは仕入先ページの表記を保存（checkerのページ内照合で一致必須のため）
                         # 例: POIZON表示「39」でも仕入先「25.0cm」でヒットしたら「25.0cm」を保存
-                        size = vs
-                        break
-                    # 全規格サイズ（skuManySizeInfos）での照合: 仕入先cm表記 vs POIZON JP/US/KR等
-                    if vs and item_extra_keys and _size_equivalent(vs, ps, b_extra_keys=item_extra_keys):
-                        hit = True
                         size = vs
                         break
                     # バリアントにサイズ情報なし or POIZON側にサイズなし → 品番一致で全SKU対象
@@ -1509,6 +1565,11 @@ def external_auto_link_api():
         if sid:
             sku_to_product[sid] = p
 
+    # 登録URLはクエリ文字列を除去して共通URLにする
+    # （?variantId=特定サイズ が残ると checker がそのサイズに固定され、
+    #   全SKU同じサイズの在庫を見てしまうため）
+    url_clean = _re.sub(r"[?#].*$", "", url)
+
     linked = []
     for m_ in matched:
         sid = m_["sku_id"]
@@ -1535,17 +1596,17 @@ def external_auto_link_api():
                     v_cost = int(v.get("cost"))
                     break
         link_cost = v_cost or cost_price
-        links[sid] = {"url": url, "name": label, "enabled": True}
+        links[sid] = {"url": url_clean, "name": label, "enabled": True}
         if link_cost:
             links[sid]["cost_price"] = link_cost
         if sid in sku_to_product:
-            sku_to_product[sid]["url"] = url
+            sku_to_product[sid]["url"] = url_clean
             sku_to_product[sid]["enabled"] = True
         else:
             products.append({
                 "id": next_product_id(products),
                 "name": label or "POIZON:{}".format(sid),
-                "url": url,
+                "url": url_clean,
                 "size_pattern": m_["size"],
                 "stock_keyword": "",
                 "enabled": True,
