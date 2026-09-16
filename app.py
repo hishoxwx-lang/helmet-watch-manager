@@ -1604,10 +1604,18 @@ def external_auto_link_api():
         if sid:
             sku_to_product[sid] = p
 
-    # 登録URLはクエリ文字列を除去して共通URLにする
-    # （?variantId=特定サイズ が残ると checker がそのサイズに固定され、
-    #   全SKU同じサイズの在庫を見てしまうため）
-    url_clean = _re.sub(r"[?#].*$", "", url)
+    # 登録URLから「追跡・バリアント指定クエリ」のみ除去する。
+    # 楽天の ?variantId= が残ると checker がそのサイズに固定されるため除去するが、
+    # parrmark等の ?id=81779（商品特定に必須）は保持する必要がある。
+    # 安全策: 楽天/Yahoo以外はクエリを保持し、楽天は variantId/s-id/viewport 系のみ除去。
+    _u_low = url.lower()
+    if "rakuten.co.jp" in _u_low:
+        url_clean = _re.sub(r"[?&](variantid|variant_id|s-id|scid|sc2id|scm|rafcid|link_type|no=\d+|afly\w*)=[^&]*", "", url, flags=_re.I)
+        url_clean = _re.sub(r"[?&]xuseflg_ichiba01=[^&]*", "", url_clean)
+        if url_clean.endswith("?") or url_clean.endswith("&"):
+            url_clean = url_clean[:-1]
+    else:
+        url_clean = url
 
     linked = []
     for m_ in matched:

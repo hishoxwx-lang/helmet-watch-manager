@@ -100,6 +100,11 @@ links = json.load(open(appmod.POIZON_LINKS_FILE))
 ok5 = links.get("1070014377", {}).get("cost_price") == 69300
 results.append(("cost_price=69300（税込セール価格）保存", ok5))
 
+# --- 検証3.5: 登録URLに必須クエリ(?id=)が保持されていること ---
+_l0 = links.get("1070014377") or {}
+ok35 = "id=81779" in _l0.get("url", "")
+results.append(("登録URLに必須クエリ(id=81779)が保持", ok35))
+
 # --- 検証4: 売切れ検知→直接取り下げ ---
 # state.json を IN_STOCK に偽装 → checker の判定で Parrmark ページは実ページ（Black Lはまだ在庫あり）
 # → 取り下げ発火を検証するため、sizeを品切れサイズ(S)に変えてモックでOK確認
